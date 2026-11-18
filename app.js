@@ -175,13 +175,26 @@ function readLessonFields(fd, admin = false) {
 // ---------------------------------------------------------------------
 // Page d'accueil (contenu dans config.js)
 // ---------------------------------------------------------------------
-function homeHtml() {
+// Coordonnées cliquables : e-mail (mailto:) et téléphone (tel:, format international).
+function contactHtml() {
+  const mail = CFG.CONTACT_EMAIL, phone = CFG.CONTACT_PHONE;
+  if (!mail && !phone) return '';
+  const digits = String(phone || '').replace(/\D/g, '');
+  const telHref = /^0\d{9}$/.test(digits) ? `+33${digits.slice(1)}` : digits;
+  const telText = /^0\d{9}$/.test(digits) ? digits.replace(/(\d{2})(?=\d)/g, '$1 ') : phone;
+  return `
+    <div class="contact">
+      ${mail ? `<a href="mailto:${esc(mail)}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 4-8 5-8-5V6l8 5 8-5v2z"/></svg>${esc(mail)}</a>` : ''}
+      ${phone ? `<a href="tel:${esc(telHref)}"><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M6.6 10.8a15.1 15.1 0 0 0 6.6 6.6l2.2-2.2a1 1 0 0 1 1-.25 11.4 11.4 0 0 0 3.6.57 1 1 0 0 1 1 1V20a1 1 0 0 1-1 1A17 17 0 0 1 3 4a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1c0 1.25.2 2.45.57 3.57a1 1 0 0 1-.25 1z"/></svg>${esc(telText)}</a>` : ''}
+    </div>`;
+}
+
+function heroHtml() {
   const name = CFG.TEACHER_NAME || '';
   const photo = CFG.PHOTO_URL
     ? `<img class="photo" src="${esc(CFG.PHOTO_URL)}" alt="${esc(name)}" onerror="this.remove()">`
     : '';
   const about = (CFG.ABOUT_PARAGRAPHS || []).map((p) => `<p>${esc(p)}</p>`).join('');
-  const steps = (CFG.HOW_TO || []).map(([t, d]) => `<li><strong>${esc(t)}</strong><span>${esc(d)}</span></li>`).join('');
   return `
     <section class="hero card">
       ${photo}
@@ -189,10 +202,17 @@ function homeHtml() {
         ${name ? `<h1>${esc(name)}</h1>` : ''}
         ${CFG.TAGLINE ? `<p class="tagline">${esc(CFG.TAGLINE)}</p>` : ''}
         ${about}
+        ${contactHtml()}
       </div>
-    </section>
-    ${steps ? `<section class="card"><h2>Comment utiliser le site</h2><ol class="steps">${steps}</ol></section>` : ''}`;
+    </section>`;
 }
+
+function howToHtml() {
+  const steps = (CFG.HOW_TO || []).map(([t, d]) => `<li><strong>${esc(t)}</strong><span>${esc(d)}</span></li>`).join('');
+  return steps ? `<section class="card"><h2>Comment utiliser le site</h2><ol class="steps">${steps}</ol></section>` : '';
+}
+
+const homeHtml = () => heroHtml() + howToHtml();
 
 // ---------------------------------------------------------------------
 // Démarrage, connexion, invitation, lien de connexion
@@ -278,9 +298,17 @@ async function renderJoin(token) {
   const warn = session
     ? `<p class="warn">Vous êtes actuellement connecté en tant que ${esc(session.user.email)}. Créer un compte vous déconnectera.</p>`
     : '';
+  // Page d'invitation : présentation (contexte) + formulaire + mode d'emploi.
   $app.innerHTML = `
-    <div class="card narrow">
-      <h1>Créer votre compte</h1>
+    <header class="topbar">
+      <div class="brand">${esc(CFG.SITE_TITLE)}</div>
+      <nav></nav>
+      <div class="who"><button class="primary" id="goJoin">Créer mon compte</button></div>
+    </header>
+    <main>
+    ${heroHtml()}
+    <section class="card login-card" id="creation">
+      <h2>Créer votre compte</h2>
       <p>Vous avez été invité à l'espace de réservation des cours${CFG.TEACHER_NAME ? ` de ${esc(CFG.TEACHER_NAME)}` : ''}.</p>
       ${warn}
       <form id="join">
@@ -291,7 +319,13 @@ async function renderJoin(token) {
         <p class="error" id="err"></p>
       </form>
       <p class="muted small">Vous avez déjà un compte ? <a href="${esc(location.pathname)}">Se connecter</a></p>
-    </div>`;
+    </section>
+    ${howToHtml()}
+    </main>`;
+  document.getElementById('goJoin').onclick = () => {
+    document.getElementById('creation').scrollIntoView({ behavior: 'smooth' });
+    document.querySelector('#join input[name=email]').focus({ preventScroll: true });
+  };
   document.getElementById('join').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
