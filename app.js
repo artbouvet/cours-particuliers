@@ -756,7 +756,7 @@ async function openAddLessonModal(after) {
     body: `
       <label>Élève<select name="student_id" required>
         <option value="">— Choisir —</option>
-        ${students.map((s) => `<option value="${s.id}">${esc(s.student_name || s.email)}${s.hourly_rate != null ? ` (${esc(eur(s.hourly_rate))}/h)` : ''}</option>`).join('')}
+        ${students.map((s) => `<option value="${s.id}">${esc(s.student_name || s.email)}${s.pending ? ' (compte non créé)' : ''}${s.hourly_rate != null ? ` (${esc(eur(s.hourly_rate))}/h)` : ''}</option>`).join('')}
       </select></label>
       <div class="row3">
         <label>Date<input type="date" name="date" required value="${isoDate(defDay)}"></label>
@@ -1058,7 +1058,7 @@ function openEditStudentModal(p, after) {
   openModal({
     title: 'Modifier la fiche élève',
     body: `
-      <label>E-mail de connexion<input type="email" value="${esc(p.email)}" disabled></label>
+      <label>E-mail de connexion<input type="text" value="${esc(p.pending ? '(compte pas encore créé)' : p.email)}" disabled></label>
       <label>Tarif horaire (€/h, visible par vous seul)<input type="number" name="hourly_rate" min="0" step="0.5" inputmode="decimal" value="${p.hourly_rate ?? ''}" placeholder="laisser vide si non défini"></label>
       <p class="muted small">Un changement de tarif s'applique aux demandes en attente et aux cours à venir ; les cours passés conservent leur tarif.</p>
       ${profileFieldsHtml(p, false)}`,
@@ -1107,14 +1107,15 @@ async function renderStudents() {
     <section class="card">
       <h2>Inviter un élève</h2>
       <form id="invite" class="row">
-        <input type="text" name="label" placeholder="Note pour vous retrouver (facultatif, ex. « Léa, 1re »)">
-        <button class="primary" type="submit">Générer un lien d'invitation</button>
+        <input type="text" name="name" required maxlength="80" placeholder="Nom de l'élève (ex. Léa Martin)">
+        <button class="primary" type="submit">Créer l'élève et générer le lien</button>
       </form>
+      <p class="muted small">L'élève apparaît tout de suite dans la liste ci-dessous : vous pouvez remplir sa fiche, fixer son tarif et lui programmer des cours avant qu'il crée son compte. Tout lui sera rattaché dès qu'il utilisera le lien.</p>
       <div id="inviteLink"></div>
     </section>
-    <section>
-      <h2>Invitations en attente</h2>
-      <div id="pendingInv"><p class="muted">Chargement…</p></div>
+    <section id="legacyInvSection" hidden>
+      <h2>Autres invitations en attente</h2>
+      <div id="pendingInv"></div>
     </section>
     <section>
       <h2>Élèves</h2>
@@ -1125,30 +1126,31 @@ async function renderStudents() {
   document.getElementById('invite').onsubmit = async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button');
-    const label = String(new FormData(e.target).get('label') || '').trim() || null;
+    const name = String(new FormData(e.target).get('name') || '').trim();
+    if (!name) return;
     btn.disabled = true;
-    const { data, error } = await sb.from('invitations').insert({ label }).select('token').single();
+    try {
+      const data = await callInvite({ action: 'create_invite', name });
+      showLink(document.getElementById('inviteLink'), joinLink(data.token),
+        `Lien d'invitation pour <strong>${esc(name)}</strong> :`,
+        'Envoyez ce lien vous-même (SMS, WhatsApp…). L\'élève y saisira son adresse e-mail et choisira son mot de passe. Usage unique, valable 7 jours.');
+      e.target.reset();
+      loadStudents();
+    } catch (err) { toast(errMsg(err), 'err'); }
     btn.disabled = false;
-    if (error) return toast(friendlyErr(error), 'err');
-    showLink(document.getElementById('inviteLink'), joinLink(data.token),
-      `Lien d'invitation${label ? ` pour <strong>${esc(label)}</strong>` : ''} :`,
-      'Envoyez ce lien vous-même (SMS, WhatsApp…). L\'élève y saisira son adresse e-mail et choisira son mot de passe. Usage unique, valable 7 jours.');
-    e.target.reset();
-    loadInvitations();
   };
   bindPasswordForm();
-  loadInvitations();
   loadStudents();
 }
 
-async function loadInvitations() {
+// Invitations non rattachées à un élève (créées avant la V3).
+function renderLegacyInvitations(list) {
+  const section = document.getElementById('legacyInvSection');
   const box = document.getElementById('pendingInv');
-  const { data, error } = await sb.from('invitations').select('*')
-    .is('used_at', null).gt('expires_at', new Date().toISOString())
-    .order('created_at', { ascending: false });
-  if (error) { box.innerHTML = `<p class="error">${esc(errMsg(error))}</p>`; return; }
-  if (!data.length) { box.innerHTML = '<p class="muted">Aucune invitation en attente.</p>'; return; }
-  box.innerHTML = data.map((i) => `
+  const now = Date.now();
+  const valid = list.filter((i) => !i.profile_id && T(i.expires_at) > now);
+  section.hidden = !valid.length;
+  box.innerHTML = valid.map((i) => `
     <div class="lesson">
       <div class="when">${esc(i.label || '(sans note)')}</div>
       <div class="whois">Créée le ${esc(fDate(i.created_at))} · expire le ${esc(fDate(i.expires_at))}</div>
@@ -1164,7 +1166,7 @@ async function loadInvitations() {
       const { error: err } = await sb.from('invitations').delete().eq('token', b.dataset.revoke);
       if (err) return toast(friendlyErr(err), 'err');
       toast('Invitation révoquée.');
-      loadInvitations();
+      loadStudents();
     };
   });
 }
@@ -1173,36 +1175,92 @@ async function loadStudents() {
   const box = document.getElementById('studentList');
   let data;
   try { data = await getStudents(); } catch (e) { box.innerHTML = `<p class="error">${esc(errMsg(e))}</p>`; return; }
+  const { data: invs, error: invErr } = await sb.from('invitations').select('*')
+    .is('used_at', null).order('created_at', { ascending: false });
+  if (invErr) { box.innerHTML = `<p class="error">${esc(errMsg(invErr))}</p>`; return; }
+  renderLegacyInvitations(invs);
+  // Dernière invitation non utilisée de chaque élève en attente.
+  const invOf = new Map();
+  for (const i of invs) if (i.profile_id && !invOf.has(i.profile_id)) invOf.set(i.profile_id, i);
+
   if (!data.length) { box.innerHTML = '<p class="muted">Aucun élève pour l\'instant.</p>'; return; }
+  const now = Date.now();
+  const inviteBlock = (p) => {
+    const inv = invOf.get(p.id);
+    const valid = inv && T(inv.expires_at) > now;
+    return `
+      <div class="invite-status">
+        <span>${valid ? `Lien d'invitation valable jusqu'au ${esc(fDate(inv.expires_at))}.` : 'Lien d\'invitation expiré ou absent.'}</span>
+        ${valid ? `<button data-copyinv="${esc(inv.token)}">Copier le lien d'invitation</button>` : ''}
+        <button data-renew="${p.id}">Générer un nouveau lien</button>
+      </div>`;
+  };
   box.innerHTML = data.map((p) => `
-    <div class="student card">
+    <div class="student card" data-id="${p.id}">
       <div class="student-head">
         <strong>${esc(p.student_name || '(profil non complété)')}</strong>
-        <span class="muted">${esc(p.email)}</span>
+        ${p.pending ? '<span class="badge warn">Compte non créé</span>' : `<span class="muted">${esc(p.email)}</span>`}
       </div>
+      ${p.pending ? inviteBlock(p) : ''}
       <dl>
         <dt>Tarif horaire</dt><dd>${esc(rateText(p.hourly_rate))}</dd>
       </dl>
       <div class="psections">${profileReadHtml(p)}</div>
       <div class="actions">
         <button class="primary" data-editstudent="${p.id}">Modifier la fiche</button>
-        <button data-relink="${esc(p.email)}">Générer un lien de connexion (mot de passe oublié)</button>
+        ${p.pending ? '' : `<button data-relink="${esc(p.email)}">Générer un lien de connexion (mot de passe oublié)</button>`}
+        <button class="danger" data-delstudent="${p.id}">Supprimer l'élève</button>
       </div>
       <div class="relink"></div>
     </div>`).join('');
+
+  const byId = (id) => data.find((p) => p.id === id);
+  const outOf = (b) => b.closest('.student').querySelector('.relink');
   box.querySelectorAll('[data-editstudent]').forEach((b) => {
-    b.onclick = () => openEditStudentModal(data.find((p) => p.id === b.dataset.editstudent), loadStudents);
+    b.onclick = () => openEditStudentModal(byId(b.dataset.editstudent), loadStudents);
+  });
+  box.querySelectorAll('[data-copyinv]').forEach((b) => { b.onclick = () => copyText(joinLink(b.dataset.copyinv)); });
+  box.querySelectorAll('[data-renew]').forEach((b) => {
+    b.onclick = async () => {
+      const p = byId(b.dataset.renew);
+      b.disabled = true;
+      // L'ancien lien non utilisé est remplacé par le nouveau.
+      await sb.from('invitations').delete().eq('profile_id', p.id).is('used_at', null);
+      const { data: inv, error } = await sb.from('invitations')
+        .insert({ label: p.student_name, profile_id: p.id }).select('token').single();
+      b.disabled = false;
+      if (error) return toast(friendlyErr(error), 'err');
+      await loadStudents();
+      const card = box.querySelector(`.student[data-id="${p.id}"]`);
+      if (card) {
+        showLink(card.querySelector('.relink'), joinLink(inv.token),
+          `Nouveau lien d'invitation pour <strong>${esc(p.student_name || '')}</strong> :`,
+          'L\'ancien lien ne fonctionne plus. Usage unique, valable 7 jours.');
+      }
+    };
   });
   box.querySelectorAll('[data-relink]').forEach((b) => {
     b.onclick = async () => {
       b.disabled = true;
-      const out = b.closest('.student').querySelector('.relink');
       try {
-        showLink(out, await loginLink(b.dataset.relink),
+        showLink(outOf(b), await loginLink(b.dataset.relink),
           `Lien de connexion pour <strong>${esc(b.dataset.relink)}</strong> :`,
           'L\'élève sera connecté puis invité à choisir un nouveau mot de passe. Usage unique, valable 24 h (réglage Supabase).');
       } catch (err) { toast(errMsg(err), 'err'); }
       b.disabled = false;
+    };
+  });
+  box.querySelectorAll('[data-delstudent]').forEach((b) => {
+    b.onclick = async () => {
+      const p = byId(b.dataset.delstudent);
+      const name = p.student_name || p.email;
+      if (!confirm(`Supprimer définitivement ${name} ?\n\nSon compte, sa fiche et tous ses cours (passés, à venir et demandes) seront supprimés. Cette action est irréversible.`)) return;
+      b.disabled = true;
+      try {
+        await callInvite({ action: 'delete_student', id: p.id });
+        toast(`${name} a été supprimé.`);
+        loadStudents();
+      } catch (err) { toast(errMsg(err), 'err'); b.disabled = false; }
     };
   });
 }
