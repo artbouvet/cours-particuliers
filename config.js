@@ -21,6 +21,10 @@ export const PHOTO_URL = 'photo.jpg';
 export const TEACHER_NAME = 'Arthur Bouvet';
 export const TAGLINE = 'Professeur particulier';
 
+// Coordonnées affichées (cliquables) sous la présentation ; '' pour masquer.
+export const CONTACT_EMAIL = 'arthur.prof.part@gmail.com';
+export const CONTACT_PHONE = '0604658714';
+
 // Présentation : un paragraphe par ligne du tableau.
 export const ABOUT_PARAGRAPHS = [
   'Etudiant ingénieur de 23 ans en spécialisation Intelligence Artificielle à l\'Ecole Nationale Supérieure des Techniques Avancées (ENSTA) de Palaiseau.',
