@@ -69,10 +69,13 @@ function priceOf(l) {
   if (l.hourly_rate == null) return null;
   return Math.round(Number(l.hourly_rate) * ((T(l.end_at) - T(l.start_at)) / 3600000) * 100) / 100;
 }
+// Le tarif horaire n'est affiché qu'au professeur ; l'élève ne voit que le prix du cours.
 function priceText(l) {
   const p = priceOf(l);
-  return p == null ? null : `${eur(p)} (${eur(l.hourly_rate)}/h)`;
+  if (p == null) return null;
+  return S.isAdmin ? `${eur(p)} (${eur(l.hourly_rate)}/h)` : eur(p);
 }
+const lessonTitle = (l) => (l.title && l.title.trim()) || 'Cours';
 const lessonMeta = (l) => [subjectLabel(l), MODES[l.mode], priceText(l)].filter(Boolean).map(esc).join(' · ');
 const safeUrl = (u) => (u && /^https?:\/\//i.test(u.trim()) ? u.trim() : null);
 function visioHtml(l) {
@@ -133,6 +136,7 @@ function lessonFieldsHtml(l = {}, admin = false) {
   const r = (name, val, label, cur) =>
     `<label class="opt"><input type="radio" name="${name}" value="${val}" ${cur === val ? 'checked' : ''} required> ${label}</label>`;
   return `
+    ${admin ? `<label>Titre de la séance (affiché à l'élève)<input type="text" name="title" required maxlength="80" value="${esc(l.title || 'Cours')}" placeholder="Cours, Séance d'essai…"></label>` : ''}
     <fieldset class="seg"><legend>Lieu du cours</legend>
       ${r('mode', 'domicile', 'Domicile', l.mode)}${r('mode', 'distance', 'À distance', l.mode)}
     </fieldset>
@@ -161,7 +165,10 @@ function readLessonFields(fd, admin = false) {
     mode, subject,
     subject_other: subject === 'autre' ? (String(fd.get('subject_other') || '').trim() || null) : null,
   };
-  if (admin) o.visio_link = mode === 'distance' ? (String(fd.get('visio_link') || '').trim() || null) : null;
+  if (admin) {
+    o.visio_link = mode === 'distance' ? (String(fd.get('visio_link') || '').trim() || null) : null;
+    o.title = String(fd.get('title') || '').trim() || 'Cours';
+  }
   return o;
 }
 
@@ -428,6 +435,10 @@ function weekDays() {
 }
 
 function renderCalendar() {
+  // Élève : pas de navigation dans les semaines passées.
+  const thisWeek = mondayOf(new Date());
+  if (!S.isAdmin && S.weekStart < thisWeek) S.weekStart = thisWeek;
+  const canGoBack = S.isAdmin || S.weekStart > thisWeek;
   const end = addDays(S.weekStart, 6);
   const adminTools = S.isAdmin ? `
     <div class="tools">
@@ -447,7 +458,7 @@ function renderCalendar() {
     : '<span class="lg open">Disponible</span><span class="lg unavail">Indisponible</span><span class="lg pending">Demande en attente</span><span class="lg confirmed">Cours programmé</span><span class="lg selected">Sélection</span>';
   $view().innerHTML = `
     <div class="weeknav">
-      <button id="prevW" aria-label="Semaine précédente">←</button>
+      <button id="prevW" aria-label="Semaine précédente" ${canGoBack ? '' : 'disabled title="Les cours passés sont dans « Mes cours »"'}>←</button>
       <div class="weeklabel">Semaine du ${S.weekStart.getDate()} au ${fDate(end)}</div>
       <button id="nextW" aria-label="Semaine suivante">→</button>
       <button id="todayW">Aujourd'hui</button>
@@ -486,7 +497,7 @@ async function loadWeek() {
   } else {
     const { data, error } = await sb.rpc('get_slots', { p_from: from, p_to: to });
     if (error) return gridError(error);
-    S.slotState = new Map(data.map((r) => [T(r.slot_start), r.state]));
+    S.slotState = new Map(data.map((r) => [T(r.slot_start), { state: r.state, title: r.title }]));
   }
   drawGrid();
 }
@@ -502,24 +513,25 @@ function adminCell(t) {
   const l = S.weekLessons.find((x) => t >= T(x.start_at) && t < T(x.end_at));
   if (l) {
     const name = studentName(l);
-    const tip = [name, fRange(l.start_at, l.end_at), subjectLabel(l), MODES[l.mode], priceText(l),
+    const label = `${lessonTitle(l)} · ${name}${l.status === 'pending' ? ' (demande)' : ''}`;
+    const tip = [label, fRange(l.start_at, l.end_at), subjectLabel(l), MODES[l.mode], priceText(l),
       l.status === 'pending' ? 'Demande en attente' : 'Cours programmé'].filter(Boolean).join('\n');
-    return { cls: l.status, key: 'L' + l.id, label: l.status === 'pending' ? `${name} (demande)` : name, tip, clickable: false };
+    return { cls: l.status, key: 'L' + l.id, label, tip, clickable: false };
   }
   const open = S.open.has(t);
   return { cls: open ? 'open' : 'closed', key: open ? 'open' : 'closed', label: open ? 'Disponible' : '', clickable: S.editMode && t >= Date.now() };
 }
 
 function studentCell(t) {
-  const st = S.slotState.get(t);
-  const map = {
-    free: ['open', 'Disponible'],
-    mine_pending: ['pending', 'Demande en attente'],
-    mine_confirmed: ['confirmed', 'Cours programmé'],
-  };
-  const [cls, label] = map[st] || ['unavail', 'Indisponible'];
-  const key = map[st] ? st : 'unavail';
-  return { cls, key, label, clickable: st === 'free' && t >= Date.now() };
+  const s = S.slotState.get(t);
+  const st = s && t >= Date.now() ? s.state : null;   // le passé n'est jamais affiché à l'élève
+  if (st === 'free') return { cls: 'open', key: 'free', label: 'Disponible', clickable: true };
+  if (st === 'mine_pending') return { cls: 'pending', key: 'pending', label: 'Demande en attente', clickable: false };
+  if (st === 'mine_confirmed') {
+    const title = (s.title && s.title.trim()) || 'Cours';
+    return { cls: 'confirmed', key: `c:${title}`, label: title, tip: `${title} (cours programmé)`, clickable: false };
+  }
+  return { cls: 'unavail', key: 'unavail', label: 'Indisponible', clickable: false };
 }
 
 const cellInfo = (t) => (S.isAdmin ? adminCell(t) : studentCell(t));
@@ -661,7 +673,7 @@ function openRequestModal(a, b) {
     title: 'Demande de cours',
     submitLabel: 'Envoyer la demande',
     body: `
-      <p><strong>${esc(fRange(a, b))}</strong>${p != null ? `<br><span class="muted">Prix : ${esc(eur(p))} (${esc(eur(S.profile.hourly_rate))}/h)</span>` : ''}</p>
+      <p><strong>${esc(fRange(a, b))}</strong>${p != null ? `<br><span class="muted">Prix : ${esc(eur(p))}</span>` : ''}</p>
       ${lessonFieldsHtml({}, false)}`,
     onOpen: bindLessonFields,
     onSubmit: async (fd) => {
@@ -776,6 +788,7 @@ function drawAdminDash() {
 
   const pendingCard = (l) => `
     <div class="lesson">
+      <div class="ltitle">${esc(lessonTitle(l))}</div>
       <div class="when">${esc(fRange(l.start_at, l.end_at))} ${T(l.start_at) < now ? '<span class="badge warn">date passée</span>' : ''}</div>
       <div class="whois">${esc(studentName(l))}</div>
       ${metaLine(l)}
@@ -786,6 +799,7 @@ function drawAdminDash() {
     </div>`;
   const lessonCard = (l, isUpcoming) => `
     <div class="lesson">
+      <div class="ltitle">${esc(lessonTitle(l))}</div>
       <div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
       <div class="whois">${esc(studentName(l))}</div>
       ${metaLine(l)}
@@ -796,13 +810,16 @@ function drawAdminDash() {
       </label>
       <div class="actions">
         <button data-act="savenotes" data-id="${l.id}">Enregistrer les notes</button>
-        <button data-act="edit" data-id="${l.id}">Modifier (lieu, matière, visio)</button>
-        ${isUpcoming ? `<button class="danger" data-act="cancel" data-id="${l.id}">Annuler le cours</button>` : ''}
+        <button data-act="edit" data-id="${l.id}">Modifier (titre, lieu, matière, visio)</button>
+        ${isUpcoming
+          ? `<button class="danger" data-act="cancel" data-id="${l.id}">Annuler le cours</button>`
+          : `<button class="danger" data-act="delete" data-id="${l.id}">Supprimer</button>`}
       </div>
     </div>`;
   const closedCard = (l) => `
-    <div class="lesson dim"><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
-    <div class="whois">${esc(studentName(l))} · <span class="badge">${statusLabel[l.status]}</span></div>${metaLine(l)}</div>`;
+    <div class="lesson dim"><div class="ltitle">${esc(lessonTitle(l))}</div><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
+    <div class="whois">${esc(studentName(l))} · <span class="badge">${statusLabel[l.status]}</span></div>${metaLine(l)}
+    <div class="actions"><button class="danger" data-act="delete" data-id="${l.id}">Supprimer</button></div></div>`;
 
   $view().innerHTML = `
     <div class="summary">
@@ -839,17 +856,18 @@ function drawStudentDash() {
   const notes = (l) => (l.notes ? `<div class="notes-ro"><div class="small muted">Notes de séance</div>${esc(l.notes)}</div>` : '');
   const card = (l, withVisio) => `
     <div class="lesson">
+      <div class="ltitle">${esc(lessonTitle(l))}</div>
       <div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
       ${metaLine(l)}
       ${withVisio ? visioHtml(l) : ''}
       ${paidBadge(l)}${notes(l)}
     </div>`;
   const pendingCard = (l) => `
-    <div class="lesson"><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
+    <div class="lesson"><div class="ltitle">${esc(lessonTitle(l))}</div><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
     ${metaLine(l)}
     <div class="actions"><span class="badge warn">En attente de validation</span>
     <button data-act="withdraw" data-id="${l.id}">Retirer ma demande</button></div></div>`;
-  const closedCard = (l) => `<div class="lesson dim"><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>${metaLine(l)}<span class="badge">${statusLabel[l.status]}</span></div>`;
+  const closedCard = (l) => `<div class="lesson dim"><div class="ltitle">${esc(lessonTitle(l))}</div><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>${metaLine(l)}<span class="badge">${statusLabel[l.status]}</span></div>`;
 
   $view().innerHTML = `
     ${section('Mes demandes en attente', pending.map(pendingCard), 'Aucune demande en attente.')}
@@ -883,6 +901,12 @@ function bindDashActions() {
         await update(id, { notes: ta.value.trim() || null }, 'Notes enregistrées.', false);
         break;
       }
+      case 'delete': {
+        if (!confirm('Supprimer définitivement ce cours ? Cette action est irréversible.')) break;
+        const { error } = await sb.from('lessons').delete().eq('id', id);
+        if (error) toast(friendlyErr(error), 'err'); else { toast('Cours supprimé.'); renderDashboard(); }
+        break;
+      }
       case 'withdraw': {
         if (!confirm('Retirer cette demande ?')) break;
         const { error } = await sb.from('lessons').delete().eq('id', id);
@@ -902,18 +926,39 @@ function bindDashActions() {
 // ---------------------------------------------------------------------
 // Profil (élève) et fiche élève (admin)
 // ---------------------------------------------------------------------
-const PROFILE_FIELDS = [
-  ['student_name', 'Nom et prénom de l\'élève', 'text'],
-  ['parent_name', 'Nom du parent (si élève mineur)', 'text'],
-  ['phone', 'Téléphone', 'tel'],
-  ['address', 'Adresse', 'textarea'],
-  ['level', 'Classe / niveau', 'text'],
-  ['remarks', 'Remarques (objectifs, difficultés…)', 'textarea'],
+// Fiche élève : sections « Élève », « Parent », « Remarques ».
+const PROFILE_SECTIONS = [
+  ['Élève', [
+    ['student_name', 'Nom et prénom', 'text'],
+    ['phone', 'Téléphone', 'tel'],
+    ['student_email', 'E-mail', 'email'],
+    ['address', 'Adresse (cours à domicile)', 'textarea'],
+    ['level', 'Classe / niveau', 'text'],
+  ]],
+  ['Parent (si élève mineur)', [
+    ['parent_name', 'Nom et prénom', 'text'],
+    ['parent_phone', 'Téléphone', 'tel'],
+    ['parent_email', 'E-mail', 'email'],
+  ]],
+  ['Remarques', [
+    ['remarks', 'Objectifs, difficultés, informations utiles…', 'textarea'],
+  ]],
 ];
-const profileFieldsHtml = (p, requireName = true) => PROFILE_FIELDS.map(([k, l, type]) => (type === 'textarea'
-  ? `<label>${l}<textarea name="${k}" rows="3">${esc(p[k])}</textarea></label>`
-  : `<label>${l}<input type="${type}" name="${k}" value="${esc(p[k])}" ${k === 'student_name' && requireName ? 'required' : ''}></label>`)).join('');
+const PROFILE_FIELDS = PROFILE_SECTIONS.flatMap(([, fields]) => fields);
+const fieldHtml = (p, [k, l, type], requireName) => (type === 'textarea'
+  ? `<label>${l}<textarea name="${k}" rows="${k === 'remarks' ? 3 : 2}">${esc(p[k])}</textarea></label>`
+  : `<label>${l}<input type="${type}" name="${k}" value="${esc(p[k])}" ${k === 'student_name' && requireName ? 'required' : ''}></label>`);
+const profileFieldsHtml = (p, requireName = true) => PROFILE_SECTIONS.map(([title, fields]) => `
+  <fieldset class="psection"><legend>${title}</legend>
+    ${fields.map((f) => fieldHtml(p, f, requireName)).join('')}
+  </fieldset>`).join('');
 const readProfileFields = (fd) => Object.fromEntries(PROFILE_FIELDS.map(([k]) => [k, String(fd.get(k) || '').trim() || null]));
+// Affichage en lecture (fiche élève côté professeur).
+const profileReadHtml = (p) => PROFILE_SECTIONS.map(([title, fields]) => `
+  <div class="psection-ro"><h3>${title}</h3>${fields.length === 1
+    ? `<p class="ro-text">${esc(p[fields[0][0]]) || '<span class="muted">—</span>'}</p>`
+    : `<dl>${fields.filter(([k]) => k !== 'student_name').map(([k, l]) => `<dt>${esc(l)}</dt><dd>${esc(p[k]) || '<span class="muted">—</span>'}</dd>`).join('')}</dl>`}
+  </div>`).join('');
 const rateText = (r) => (r == null ? 'non renseigné' : `${eur(r)}/h`);
 
 function passwordForm() {
@@ -947,8 +992,7 @@ function renderProfile() {
       <h2>Mon profil</h2>
       ${first}
       <form id="profile">
-        <label>E-mail du compte<input type="email" value="${esc(p.email)}" disabled></label>
-        <label>Tarif horaire (fixé par votre professeur)<input type="text" value="${esc(rateText(p.hourly_rate))}" disabled></label>
+        <label>E-mail de connexion<input type="email" value="${esc(p.email)}" disabled></label>
         ${profileFieldsHtml(p)}
         <button class="primary" type="submit">Enregistrer</button>
       </form>
@@ -970,8 +1014,8 @@ function openEditStudentModal(p, after) {
   openModal({
     title: 'Modifier la fiche élève',
     body: `
-      <label>E-mail du compte<input type="email" value="${esc(p.email)}" disabled></label>
-      <label>Tarif horaire (€/h)<input type="number" name="hourly_rate" min="0" step="0.5" inputmode="decimal" value="${p.hourly_rate ?? ''}" placeholder="laisser vide si non défini"></label>
+      <label>E-mail de connexion<input type="email" value="${esc(p.email)}" disabled></label>
+      <label>Tarif horaire (€/h, visible par vous seul)<input type="number" name="hourly_rate" min="0" step="0.5" inputmode="decimal" value="${p.hourly_rate ?? ''}" placeholder="laisser vide si non défini"></label>
       <p class="muted small">Un changement de tarif s'applique aux demandes en attente et aux cours à venir ; les cours passés conservent leur tarif.</p>
       ${profileFieldsHtml(p, false)}`,
     onSubmit: async (fd) => {
@@ -1094,8 +1138,8 @@ async function loadStudents() {
       </div>
       <dl>
         <dt>Tarif horaire</dt><dd>${esc(rateText(p.hourly_rate))}</dd>
-        ${PROFILE_FIELDS.slice(1).map(([k, l]) => `<dt>${esc(l)}</dt><dd>${esc(p[k]) || '<span class="muted">—</span>'}</dd>`).join('')}
       </dl>
+      <div class="psections">${profileReadHtml(p)}</div>
       <div class="actions">
         <button class="primary" data-editstudent="${p.id}">Modifier la fiche</button>
         <button data-relink="${esc(p.email)}">Générer un lien de connexion (mot de passe oublié)</button>
