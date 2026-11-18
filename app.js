@@ -89,7 +89,15 @@ function renderLogin() {
     e.preventDefault();
     const f = new FormData(e.target);
     const { data, error } = await sb.auth.signInWithPassword({ email: f.get('email'), password: f.get('password') });
-    if (error) { document.getElementById('err').textContent = 'Identifiants incorrects.'; return; }
+    if (error) {
+      const m = error.message || '';
+      document.getElementById('err').textContent =
+        /invalid login credentials/i.test(m) ? 'E-mail ou mot de passe incorrect.'
+        : /email not confirmed/i.test(m) ? 'Compte non confirmé (cocher « Auto Confirm User » ou confirmer l\'e-mail dans Supabase).'
+        : /invalid api key|failed to fetch|network/i.test(m) ? `Connexion à Supabase impossible : vérifiez SUPABASE_URL et SUPABASE_KEY dans config.js. (${m})`
+        : `Erreur : ${m}`;
+      return;
+    }
     await enterApp(data.user);
   };
 }
