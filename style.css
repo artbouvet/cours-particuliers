@@ -162,3 +162,13 @@ label.opt input { width: auto; margin: 0; }
   .hero { flex-direction: column; align-items: center; text-align: center; }
   .row3 { grid-template-columns: 1fr; }
 }
+
+/* ===================== V2 ===================== */
+.lesson .ltitle { font-size: .8rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase; color: var(--accent); margin-bottom: .1rem; }
+fieldset.psection { border: 1px solid var(--line); border-radius: 8px; padding: .6rem 1rem .2rem; margin: 0 0 1rem; }
+fieldset.psection legend { font-weight: 600; color: var(--accent); padding: 0 .4rem; }
+.psections { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: .4rem 1.5rem; margin-bottom: .8rem; }
+.psection-ro h3 { font-size: .85rem; color: var(--accent); margin: .4rem 0 .3rem; }
+.psection-ro dl { margin: 0; }
+button:disabled[aria-label] { cursor: not-allowed; }
+.psection-ro .ro-text { margin: 0; font-size: .9rem; white-space: pre-wrap; }
