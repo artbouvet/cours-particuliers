@@ -178,3 +178,9 @@ button:disabled[aria-label] { cursor: not-allowed; }
 .contact a { display: inline-flex; align-items: center; gap: .4rem; font-weight: 600; text-decoration: none; padding: .35rem .7rem; border: 1px solid var(--confirmed); border-radius: 999px; background: #f5f8ff; }
 .contact a:hover { background: var(--confirmed); }
 @media (max-width: 640px) { .contact { justify-content: center; } }
+
+/* Pop-ups connexion / création de compte */
+dialog.auth-modal { width: min(420px, 94vw); }
+.auth-modal .modal-form { position: relative; }
+.modal-x { position: absolute; top: .6rem; right: .6rem; border: none; background: none; font-size: 1.6rem; line-height: 1; padding: .2rem .5rem; color: var(--muted); }
+.modal-x:hover { color: var(--ink); }
