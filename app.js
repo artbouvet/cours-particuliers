@@ -5,7 +5,9 @@ import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 import * as CFG from './config.js';
 
 const $app = document.getElementById('app');
-const sb = createClient(CFG.SUPABASE_URL, CFG.SUPABASE_KEY);
+// Tolère une URL copiée avec un suffixe (/rest/v1/, /auth/v1/…) ou un « / » final.
+const SUPABASE_BASE = CFG.SUPABASE_URL.trim().replace(/\/(rest|auth|functions)\/v1\/?.*$/, '').replace(/\/+$/, '');
+const sb = createClient(SUPABASE_BASE, CFG.SUPABASE_KEY.trim());
 const SLOT_MS = 30 * 60 * 1000;
 
 const S = {
@@ -66,7 +68,8 @@ async function boot() {
     return;
   }
   const params = new URLSearchParams(location.hash.slice(1));
-  if (params.get('invite')) return renderActivation(params.get('invite'), params.get('type') || 'invite');
+  if (params.get('join')) return renderJoin(params.get('join'));
+  if (params.get('invite')) return renderActivation(params.get('invite'), params.get('type') || 'magiclink');
 
   const { data: { session } } = await sb.auth.getSession();
   if (!session) return renderLogin();
@@ -102,6 +105,57 @@ function renderLogin() {
   };
 }
 
+// Appel de la fonction serveur « invite », avec message d'erreur lisible.
+async function callInvite(body) {
+  const { data, error } = await sb.functions.invoke('invite', { body });
+  if (error) {
+    let m = error.message;
+    try { const j = await error.context.json(); m = j.error || m; } catch { /* réponse non JSON */ }
+    throw new Error(m);
+  }
+  return data;
+}
+
+// Lien d'invitation anonyme : l'élève crée son compte (e-mail + mot de passe).
+async function renderJoin(token) {
+  const { data: { session } } = await sb.auth.getSession();
+  const warn = session
+    ? `<p class="warn">Vous êtes actuellement connecté en tant que ${esc(session.user.email)}. Créer un compte vous déconnectera.</p>`
+    : '';
+  $app.innerHTML = `
+    <div class="card narrow">
+      <h1>Créer votre compte</h1>
+      <p>Vous avez été invité à l'espace de réservation des cours de mathématiques.</p>
+      ${warn}
+      <form id="join">
+        <label>Adresse e-mail (élève ou parent)<input type="email" name="email" required autocomplete="email"></label>
+        <label>Mot de passe (8 caractères minimum)<input type="password" name="p1" minlength="8" required autocomplete="new-password"></label>
+        <label>Confirmation du mot de passe<input type="password" name="p2" minlength="8" required autocomplete="new-password"></label>
+        <button class="primary" type="submit">Créer mon compte</button>
+        <p class="error" id="err"></p>
+      </form>
+      <p class="muted small">Vous avez déjà un compte ? <a href="${esc(location.pathname)}">Se connecter</a></p>
+    </div>`;
+  document.getElementById('join').onsubmit = async (e) => {
+    e.preventDefault();
+    const f = new FormData(e.target);
+    const err = document.getElementById('err');
+    const btn = e.target.querySelector('button');
+    const email = String(f.get('email')).trim().toLowerCase();
+    if (f.get('p1') !== f.get('p2')) { err.textContent = 'Les deux mots de passe ne correspondent pas.'; return; }
+    btn.disabled = true; err.textContent = '';
+    try {
+      await callInvite({ action: 'redeem', token, email, password: f.get('p1') });
+    } catch (ex) { err.textContent = errMsg(ex); btn.disabled = false; return; }
+    if (session) await sb.auth.signOut();
+    const { data, error } = await sb.auth.signInWithPassword({ email, password: f.get('p1') });
+    if (error) { err.textContent = `Compte créé, mais connexion impossible : ${errMsg(error)}`; btn.disabled = false; return; }
+    history.replaceState(null, '', location.pathname);
+    await enterApp(data.user);
+  };
+}
+
+// Lien de connexion (mot de passe oublié) généré par l'admin.
 async function renderActivation(token, type) {
   const { data: { session } } = await sb.auth.getSession();
   const warn = session
@@ -109,8 +163,8 @@ async function renderActivation(token, type) {
     : '';
   $app.innerHTML = `
     <div class="card narrow">
-      <h1>Bienvenue</h1>
-      <p>Ce lien vous donne accès à l'espace de réservation des cours de mathématiques.</p>
+      <h1>Connexion par lien</h1>
+      <p>Ce lien vous connecte à votre compte ; vous pourrez ensuite choisir un nouveau mot de passe.</p>
       ${warn}
       <button class="primary" id="activate">Activer mon accès</button>
       <p class="error" id="err"></p>
@@ -121,7 +175,7 @@ async function renderActivation(token, type) {
     const { data, error } = await sb.auth.verifyOtp({ token_hash: token, type });
     if (error) {
       document.getElementById('err').textContent =
-        'Ce lien est invalide, expiré ou a déjà été utilisé. Demandez un nouveau lien à votre professeur.';
+        'Ce lien de connexion est invalide, expiré ou a déjà été utilisé. Demandez un nouveau lien à votre professeur.';
       btn.disabled = false;
       return;
     }
@@ -648,31 +702,31 @@ function renderProfile() {
 }
 
 // ---------------------------------------------------------------------
-// Élèves (admin) : invitations, liens de connexion, fiches
+// Élèves (admin) : invitations anonymes, liens de connexion, fiches
 // ---------------------------------------------------------------------
-async function makeLink(email) {
-  const { data, error } = await sb.functions.invoke('invite', { body: { email } });
-  if (error) {
-    let m = error.message;
-    try { const j = await error.context.json(); m = j.error || m; } catch { /* réponse non JSON */ }
-    throw new Error(m);
-  }
-  return `${location.origin}${location.pathname}#invite=${encodeURIComponent(data.token_hash)}&type=${encodeURIComponent(data.type)}`;
+const baseUrl = () => `${location.origin}${location.pathname}`;
+const joinLink = (token) => `${baseUrl()}#join=${token}`;
+
+async function loginLink(email) {
+  const data = await callInvite({ action: 'login_link', email });
+  return `${baseUrl()}#invite=${encodeURIComponent(data.token_hash)}&type=${encodeURIComponent(data.type)}`;
 }
 
-function showLink(container, link, email) {
+function showLink(container, link, title, note) {
   container.innerHTML = `
     <div class="linkbox">
-      <div class="small">Lien pour <strong>${esc(email)}</strong> :</div>
+      <div class="small">${title}</div>
       <div class="row"><input readonly value="${esc(link)}"><button class="primary" data-copy>Copier</button></div>
-      <p class="muted small">Envoyez ce lien vous-même (SMS, WhatsApp, e-mail…). Il est à usage unique et expire après la durée réglée dans Supabase (24 h si vous avez suivi le guide).</p>
+      <p class="muted small">${note}</p>
     </div>`;
   const input = container.querySelector('input');
-  container.querySelector('[data-copy]').onclick = async () => {
-    try { await navigator.clipboard.writeText(link); }
-    catch { input.select(); document.execCommand('copy'); }
-    toast('Lien copié.');
-  };
+  container.querySelector('[data-copy]').onclick = () => copyText(link, input);
+}
+
+async function copyText(text, input) {
+  try { await navigator.clipboard.writeText(text); }
+  catch { if (input) { input.select(); document.execCommand('copy'); } }
+  toast('Lien copié.');
 }
 
 async function renderStudents() {
@@ -680,10 +734,14 @@ async function renderStudents() {
     <section class="card">
       <h2>Inviter un élève</h2>
       <form id="invite" class="row">
-        <input type="email" name="email" placeholder="adresse e-mail de l'élève ou du parent" required>
-        <button class="primary" type="submit">Générer le lien d'invitation</button>
+        <input type="text" name="label" placeholder="Note pour vous retrouver (facultatif, ex. « Léa, 1re »)">
+        <button class="primary" type="submit">Générer un lien d'invitation</button>
       </form>
       <div id="inviteLink"></div>
+    </section>
+    <section>
+      <h2>Invitations en attente</h2>
+      <div id="pendingInv"><p class="muted">Chargement…</p></div>
     </section>
     <section>
       <h2>Élèves</h2>
@@ -694,18 +752,48 @@ async function renderStudents() {
   document.getElementById('invite').onsubmit = async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('button');
-    const email = new FormData(e.target).get('email').trim();
+    const label = String(new FormData(e.target).get('label') || '').trim() || null;
     btn.disabled = true;
-    try {
-      const link = await makeLink(email);
-      showLink(document.getElementById('inviteLink'), link, email);
-      e.target.reset();
-      loadStudents();
-    } catch (err) { toast(errMsg(err), 'err'); }
+    const { data, error } = await sb.from('invitations').insert({ label }).select('token').single();
     btn.disabled = false;
+    if (error) return toast(errMsg(error), 'err');
+    showLink(document.getElementById('inviteLink'), joinLink(data.token),
+      `Lien d'invitation${label ? ` pour <strong>${esc(label)}</strong>` : ''} :`,
+      'Envoyez ce lien vous-même (SMS, WhatsApp…). L\'élève y saisira son adresse e-mail et choisira son mot de passe. Usage unique, valable 7 jours.');
+    e.target.reset();
+    loadInvitations();
   };
   bindPasswordForm();
+  loadInvitations();
   loadStudents();
+}
+
+async function loadInvitations() {
+  const box = document.getElementById('pendingInv');
+  const { data, error } = await sb.from('invitations').select('*')
+    .is('used_at', null).gt('expires_at', new Date().toISOString())
+    .order('created_at', { ascending: false });
+  if (error) { box.innerHTML = `<p class="error">${esc(errMsg(error))}</p>`; return; }
+  if (!data.length) { box.innerHTML = '<p class="muted">Aucune invitation en attente.</p>'; return; }
+  box.innerHTML = data.map((i) => `
+    <div class="lesson">
+      <div class="when">${esc(i.label || '(sans note)')}</div>
+      <div class="whois">Créée le ${esc(fDate(i.created_at))} · expire le ${esc(fDate(i.expires_at))}</div>
+      <div class="actions">
+        <button data-copyinv="${esc(i.token)}">Copier le lien</button>
+        <button class="danger" data-revoke="${esc(i.token)}">Révoquer</button>
+      </div>
+    </div>`).join('');
+  box.querySelectorAll('[data-copyinv]').forEach((b) => { b.onclick = () => copyText(joinLink(b.dataset.copyinv)); });
+  box.querySelectorAll('[data-revoke]').forEach((b) => {
+    b.onclick = async () => {
+      if (!confirm('Révoquer cette invitation ? Le lien ne fonctionnera plus.')) return;
+      const { error: err } = await sb.from('invitations').delete().eq('token', b.dataset.revoke);
+      if (err) return toast(errMsg(err), 'err');
+      toast('Invitation révoquée.');
+      loadInvitations();
+    };
+  });
 }
 
 async function loadStudents() {
@@ -728,14 +816,17 @@ async function loadStudents() {
   box.querySelectorAll('[data-relink]').forEach((b) => {
     b.onclick = async () => {
       b.disabled = true;
-      try { showLink(b.nextElementSibling, await makeLink(b.dataset.relink), b.dataset.relink); }
-      catch (err) { toast(errMsg(err), 'err'); }
+      try {
+        showLink(b.nextElementSibling, await loginLink(b.dataset.relink),
+          `Lien de connexion pour <strong>${esc(b.dataset.relink)}</strong> :`,
+          'L\'élève sera connecté puis invité à choisir un nouveau mot de passe. Usage unique, valable 24 h (réglage Supabase).');
+      } catch (err) { toast(errMsg(err), 'err'); }
       b.disabled = false;
     };
   });
 }
 
-// Lien d'invitation collé dans un onglet déjà ouvert sur le site.
-window.addEventListener('hashchange', () => { if (location.hash.includes('invite=')) boot(); });
+// Lien collé dans un onglet déjà ouvert sur le site.
+window.addEventListener('hashchange', () => { if (/(invite|join)=/.test(location.hash)) boot(); });
 
 boot();
