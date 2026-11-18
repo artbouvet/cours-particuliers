@@ -116,3 +116,49 @@ details summary { cursor: pointer; color: var(--muted); margin-bottom: .6rem; }
   .row { flex-direction: column; align-items: stretch; }
   .weeklabel { min-width: 0; flex: 1; }
 }
+
+/* ===================== V1 ===================== */
+[hidden] { display: none !important; }
+a { color: var(--accent); }
+button.primary a, a.btn { text-decoration: none; }
+
+/* Accueil */
+.hero { display: flex; gap: 1.5rem; align-items: flex-start; }
+.hero .photo { width: 160px; height: 160px; object-fit: cover; border-radius: 50%; flex-shrink: 0; border: 3px solid var(--confirmed); }
+.hero h1 { margin-bottom: .2rem; }
+.hero .tagline { color: var(--accent); font-weight: 600; margin-top: 0; }
+.steps { margin: 0; padding-left: 1.4rem; display: grid; gap: .7rem; }
+.steps li strong { display: block; }
+.steps li span { color: #4b5563; }
+.login-card { max-width: 420px; }
+
+/* Calendrier */
+.icon-btn { display: inline-flex; align-items: center; gap: .4rem; }
+.icon-btn.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+.gridwrap.editing { border-color: var(--accent); box-shadow: 0 0 0 2px var(--confirmed); }
+td.unavail { background: #f3f4f6; color: #9ca3af; }
+.lg.unavail::before { background: #f3f4f6; }
+
+/* Cours */
+.lesson .meta { font-size: .9rem; color: #374151; margin-bottom: .3rem; }
+.visio { margin: .2rem 0 .4rem; font-size: .9rem; }
+.visio .small { word-break: break-all; }
+.dash-tools { display: flex; justify-content: space-between; align-items: flex-end; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+.dash-tools .filter { margin: 0; }
+.actions.end { justify-content: flex-end; display: flex; gap: .5rem; margin-top: .8rem; }
+
+/* Fenêtre modale */
+dialog.modal { border: none; border-radius: 10px; padding: 0; width: min(560px, 94vw); max-height: 92vh; box-shadow: 0 12px 40px rgba(0,0,0,.25); }
+dialog.modal::backdrop { background: rgba(17, 24, 39, .45); }
+.modal-form { padding: 1.3rem; }
+.modal-form h2 { margin-top: 0; }
+fieldset.seg { border: 1px solid var(--line); border-radius: 6px; padding: .5rem .8rem .6rem; margin: 0 0 .8rem; display: flex; flex-wrap: wrap; gap: .3rem 1.2rem; }
+fieldset.seg legend { font-size: .9rem; color: #374151; padding: 0 .3rem; }
+label.opt { display: inline-flex; align-items: center; gap: .35rem; margin: 0; font-size: .95rem; color: var(--ink); cursor: pointer; }
+label.opt input { width: auto; margin: 0; }
+.row3 { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: .6rem; }
+
+@media (max-width: 640px) {
+  .hero { flex-direction: column; align-items: center; text-align: center; }
+  .row3 { grid-template-columns: 1fr; }
+}
