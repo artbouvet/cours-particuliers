@@ -5,7 +5,7 @@
 //  publiques par conception : la sécurité est assurée par la base.
 // =====================================================================
 
-export const SUPABASE_URL = 'https://drnazlhdpcyqvwiyjwrg.supabase.co/rest/v1/';
+export const SUPABASE_URL = 'https://drnazlhdpcyqvwiyjwrg.supabase.co';
 export const SUPABASE_KEY = 'sb_publishable_wXHfVoBSrMYp-v-PGN4FkQ_kRt8Psku';
 
 export const SITE_TITLE = 'Cours particuliers';
