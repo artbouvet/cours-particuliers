@@ -18,21 +18,21 @@ export const DAY_END_HOUR = 21;    // dernière ligne : 20:30–21:00
 // (ou laisser '' pour ne pas afficher de photo).
 export const PHOTO_URL = 'photo.jpg';
 
-export const TEACHER_NAME = 'Arthur';
-export const TAGLINE = 'Cours particuliers de mathématiques et de physique-chimie';
+export const TEACHER_NAME = 'Arthur Bouvet';
+export const TAGLINE = 'Professeur particulier';
 
 // Présentation : un paragraphe par ligne du tableau.
 export const ABOUT_PARAGRAPHS = [
-  '[À compléter] Présentez-vous en deux ou trois phrases : parcours, niveau enseigné, expérience.',
-  '[À compléter] Votre façon de travailler : méthode, suivi, préparation aux contrôles et examens.',
-  '[À compléter] Informations pratiques : zone de déplacement pour les cours à domicile, cours à distance, etc.',
+  'Etudiant ingénieur de 23 ans en spécialisation Intelligence Artificielle à l\'Ecole Nationale Supérieure des Techniques Avancées (ENSTA) de Palaiseau.',
+  'Cours particuliers de Mathématiques, Physique-Chimie et Informatique du collège aux études supérieures (Licence, IUT, BTS).',
+  'A domicile ou en distanciel. Suivi possible en dehors des séances pour la correction d\'exercice.',
 ];
 
 // Mode d'emploi affiché sur la page d'accueil (titre + explication).
 export const HOW_TO = [
   ['Recevoir une invitation', 'L\'accès au site se fait uniquement sur invitation. Je vous envoie un lien personnel : ouvrez-le, saisissez votre adresse e-mail et choisissez un mot de passe.'],
-  ['Compléter votre profil', 'Indiquez le nom de l\'élève, vos coordonnées, l\'adresse (pour les cours à domicile) et la classe.'],
-  ['Demander un cours', 'Dans « Réserver », cliquez sur un créneau disponible puis sur un autre plus bas le même jour pour allonger le cours. Choisissez ensuite le lieu (domicile ou à distance) et la matière.'],
+  ['Compléter votre profil', 'Indiquez vos coordonnées.'],
+  ['Demander un cours', 'Dans « Réserver », cliquez sur un créneau disponible puis sur un autre à la suite pour allonger le cours. Choisissez ensuite le lieu (domicile ou à distance) et la matière.'],
   ['Attendre la confirmation', 'Votre demande apparaît « en attente » jusqu\'à ma validation, puis « cours programmé ». Vous pouvez retirer une demande tant qu\'elle n\'est pas validée.'],
-  ['Suivre vos cours', 'Dans « Mes cours » : date, matière, prix, lien de visio pour les cours à distance, statut du paiement et notes de séance.'],
+  ['Suivre vos cours', 'Dans « Mes cours » : tout le nécessaire pour assurer le suivi et retrouver les points abordés lors de chaque séance.'],
 ];
