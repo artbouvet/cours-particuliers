@@ -257,8 +257,32 @@ function bindLogin() {
       return;
     }
     S.tab = 'calendar';
+    document.getElementById('loginDialog')?.close();
     await enterApp(data.user);
   };
+}
+
+// Pop-up d'authentification (connexion / création de compte), ouverte par le bouton en haut à droite.
+function authDialogHtml(id, title, inner) {
+  return `
+    <dialog class="modal auth-modal" id="${id}">
+      <div class="modal-form">
+        <button type="button" class="modal-x" data-close aria-label="Fermer">×</button>
+        <h2>${title}</h2>
+        ${inner}
+      </div>
+    </dialog>`;
+}
+function bindAuthDialog(id, buttonId, focusSelector) {
+  const dlg = document.getElementById(id);
+  document.getElementById(buttonId).onclick = () => {
+    dlg.showModal();
+    dlg.querySelector(focusSelector)?.focus();
+  };
+  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  // Clic sur le fond grisé : fermeture.
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
+  return dlg;
 }
 
 function renderLanding() {
@@ -268,17 +292,9 @@ function renderLanding() {
       <nav></nav>
       <div class="who"><button class="primary" id="goLogin">Se connecter</button></div>
     </header>
-    <main>
-      ${homeHtml()}
-      <section class="card login-card" id="connexion">
-        <h2>Connexion</h2>
-        ${loginFormHtml()}
-      </section>
-    </main>`;
-  document.getElementById('goLogin').onclick = () => {
-    document.getElementById('connexion').scrollIntoView({ behavior: 'smooth' });
-    document.querySelector('#login input[name=email]').focus({ preventScroll: true });
-  };
+    <main>${homeHtml()}</main>
+    ${authDialogHtml('loginDialog', 'Connexion', loginFormHtml())}`;
+  bindAuthDialog('loginDialog', 'goLogin', 'input[name=email]');
   bindLogin();
 }
 
@@ -298,17 +314,8 @@ async function renderJoin(token) {
   const warn = session
     ? `<p class="warn">Vous êtes actuellement connecté en tant que ${esc(session.user.email)}. Créer un compte vous déconnectera.</p>`
     : '';
-  // Page d'invitation : présentation (contexte) + formulaire + mode d'emploi.
-  $app.innerHTML = `
-    <header class="topbar">
-      <div class="brand">${esc(CFG.SITE_TITLE)}</div>
-      <nav></nav>
-      <div class="who"><button class="primary" id="goJoin">Créer mon compte</button></div>
-    </header>
-    <main>
-    ${heroHtml()}
-    <section class="card login-card" id="creation">
-      <h2>Créer votre compte</h2>
+  // Page d'invitation : présentation + mode d'emploi ; formulaire dans une pop-up.
+  const joinForm = `
       <p>Vous avez été invité à l'espace de réservation des cours${CFG.TEACHER_NAME ? ` de ${esc(CFG.TEACHER_NAME)}` : ''}.</p>
       ${warn}
       <form id="join">
@@ -318,14 +325,16 @@ async function renderJoin(token) {
         <button class="primary" type="submit">Créer mon compte</button>
         <p class="error" id="err"></p>
       </form>
-      <p class="muted small">Vous avez déjà un compte ? <a href="${esc(location.pathname)}">Se connecter</a></p>
-    </section>
-    ${howToHtml()}
-    </main>`;
-  document.getElementById('goJoin').onclick = () => {
-    document.getElementById('creation').scrollIntoView({ behavior: 'smooth' });
-    document.querySelector('#join input[name=email]').focus({ preventScroll: true });
-  };
+      <p class="muted small">Vous avez déjà un compte ? <a href="${esc(location.pathname)}">Se connecter</a></p>`;
+  $app.innerHTML = `
+    <header class="topbar">
+      <div class="brand">${esc(CFG.SITE_TITLE)}</div>
+      <nav></nav>
+      <div class="who"><button class="primary" id="goJoin">Créer mon compte</button></div>
+    </header>
+    <main>${homeHtml()}</main>
+    ${authDialogHtml('joinDialog', 'Créer votre compte', joinForm)}`;
+  const joinDlg = bindAuthDialog('joinDialog', 'goJoin', 'input[name=email]');
   document.getElementById('join').onsubmit = async (e) => {
     e.preventDefault();
     const f = new FormData(e.target);
@@ -341,6 +350,7 @@ async function renderJoin(token) {
     const { data, error } = await sb.auth.signInWithPassword({ email, password: f.get('p1') });
     if (error) { err.textContent = `Compte créé, mais connexion impossible : ${errMsg(error)}`; btn.disabled = false; return; }
     history.replaceState(null, '', location.pathname);
+    joinDlg.close();
     await enterApp(data.user);
   };
 }
