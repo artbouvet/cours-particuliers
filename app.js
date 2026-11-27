@@ -97,24 +97,29 @@ function toast(msg, kind = 'ok') {
 
 const $view = () => document.getElementById('view');
 
-// --- Fenêtre modale générique
-function openModal({ title, body, submitLabel = 'Enregistrer', onSubmit, onOpen }) {
+// --- Fenêtre modale générique (formulaire)
+function openModal({
+  title, body, submitLabel = 'Enregistrer', submitClass = 'primary',
+  cancelLabel = 'Annuler', closeX = false, onSubmit, onOpen,
+}) {
   const dlg = document.createElement('dialog');
   dlg.className = 'modal';
   dlg.innerHTML = `
     <form class="modal-form" novalidate>
+      ${closeX ? '<button type="button" class="modal-x" data-close aria-label="Fermer">×</button>' : ''}
       <h2>${title}</h2>
       ${body}
       <p class="error" data-err></p>
       <div class="actions end">
-        <button type="button" data-close>Annuler</button>
-        <button class="primary" type="submit">${submitLabel}</button>
+        ${cancelLabel ? `<button type="button" data-close>${cancelLabel}</button>` : ''}
+        <button class="${submitClass}" type="submit">${submitLabel}</button>
       </div>
     </form>`;
   document.body.appendChild(dlg);
   const form = dlg.querySelector('form');
   const err = dlg.querySelector('[data-err]');
-  dlg.querySelector('[data-close]').onclick = () => dlg.close();
+  dlg.querySelectorAll('[data-close]').forEach((b) => { b.onclick = () => dlg.close(); });
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });
   dlg.addEventListener('close', () => dlg.remove());
   form.onsubmit = async (e) => {
     e.preventDefault();
@@ -461,6 +466,7 @@ function renderShell() {
 // Calendrier
 // ---------------------------------------------------------------------
 const PENCIL = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zm17.71-10.21a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>';
+const DEFAULT_TRAVEL = 45;
 
 function weekDays() {
   const rows = (DAY_END - DAY_START) * 2;
@@ -494,11 +500,11 @@ function renderCalendar() {
     </div>` : '';
   const help = S.isAdmin
     ? (S.editMode
-      ? 'Mode modification : cliquez sur une case (ou cliquez-glissez sur ordinateur) pour la rendre disponible ou indisponible. Les créneaux réservés ne sont pas modifiables.'
-      : 'Cliquez sur le crayon pour modifier vos disponibilités. Survolez un cours pour voir son détail.')
-    : 'Cliquez sur un créneau disponible, puis sur un autre plus bas le même jour pour allonger le cours. Recliquez dans la sélection pour l\'annuler.';
+      ? 'Mode modification : cliquez sur une case (ou cliquez-glissez sur ordinateur) pour la rendre disponible ou indisponible. Les cours et trajets ne sont pas modifiables ici.'
+      : 'Cliquez sur un cours pour voir son détail. Cliquez sur le crayon pour modifier vos disponibilités.')
+    : 'Cliquez sur un créneau disponible, puis sur un autre plus bas le même jour pour allonger le cours. Cliquez sur un de vos cours pour voir son détail.';
   const legend = S.isAdmin
-    ? '<span class="lg open">Disponible</span><span class="lg pending">Demande en attente</span><span class="lg confirmed">Cours programmé</span><span class="lg closed">Indisponible</span>'
+    ? '<span class="lg open">Disponible</span><span class="lg pending">Demande en attente</span><span class="lg confirmed">Cours programmé</span><span class="lg travel">Trajet</span><span class="lg closed">Indisponible</span>'
     : '<span class="lg open">Disponible</span><span class="lg unavail">Indisponible</span><span class="lg pending">Demande en attente</span><span class="lg confirmed">Cours programmé</span><span class="lg selected">Sélection</span>';
   $view().innerHTML = `
     <div class="weeknav">
@@ -530,18 +536,24 @@ function renderCalendar() {
 async function loadWeek() {
   const from = S.weekStart.toISOString(), to = addDays(S.weekStart, 7).toISOString();
   if (S.isAdmin) {
+    // Fenêtre élargie d'un jour : trajets des cours situés juste avant / après la semaine.
     const [av, ls] = await Promise.all([
       sb.from('availability').select('slot_start').gte('slot_start', from).lt('slot_start', to),
-      sb.from('lessons').select('*, profiles(student_name,email)')
-        .in('status', ['pending', 'confirmed']).lt('start_at', to).gt('end_at', from),
+      sb.from('lessons').select('*, profiles(student_name,email,travel_minutes)')
+        .in('status', ['pending', 'confirmed'])
+        .lt('start_at', addDays(S.weekStart, 8).toISOString()).gt('end_at', addDays(S.weekStart, -1).toISOString()),
     ]);
     if (av.error || ls.error) return gridError(av.error || ls.error);
     S.open = new Set(av.data.map((r) => T(r.slot_start)));
     S.weekLessons = ls.data;
   } else {
-    const { data, error } = await sb.rpc('get_slots', { p_from: from, p_to: to });
-    if (error) return gridError(error);
-    S.slotState = new Map(data.map((r) => [T(r.slot_start), { state: r.state, title: r.title }]));
+    const [slots, mine] = await Promise.all([
+      sb.rpc('get_slots', { p_from: from, p_to: to }),
+      sb.from('lessons').select('*').in('status', ['pending', 'confirmed']).lt('start_at', to).gt('end_at', from),
+    ]);
+    if (slots.error || mine.error) return gridError(slots.error || mine.error);
+    S.slotState = new Map(slots.data.map((r) => [T(r.slot_start), { state: r.state, title: r.title }]));
+    S.myLessons = mine.data;
   }
   drawGrid();
 }
@@ -552,39 +564,71 @@ function gridError(e) {
 }
 
 const studentName = (l) => l.profiles?.student_name || l.profiles?.email || 'Élève';
+const hhmm = (l) => `${fTime(l.start_at)}–${fTime(l.end_at)}`;
+const lessonAt = (list, t) => list.find((x) => t >= T(x.start_at) && t < T(x.end_at));
+const travelMs = (l) => (l.mode === 'distance' ? 0 : (l.profiles?.travel_minutes ?? DEFAULT_TRAVEL) * 60000);
 
-function adminCell(t) {
-  const l = S.weekLessons.find((x) => t >= T(x.start_at) && t < T(x.end_at));
-  if (l) {
-    const name = studentName(l);
-    const label = `${lessonTitle(l)} · ${name}${l.status === 'pending' ? ' (demande)' : ''}`;
-    const tip = [label, fRange(l.start_at, l.end_at), subjectLabel(l), MODES[l.mode], priceText(l),
-      l.status === 'pending' ? 'Demande en attente' : 'Cours programmé'].filter(Boolean).join('\n');
-    return { cls: l.status, key: 'L' + l.id, label, tip, clickable: false };
-  }
-  const open = S.open.has(t);
-  return { cls: open ? 'open' : 'closed', key: open ? 'open' : 'closed', label: open ? 'Disponible' : '', clickable: S.editMode && t >= Date.now() };
+// Le slot [t, t+30 min[ chevauche-t-il le trajet aller ou retour d'un cours ?
+function travelAt(t) {
+  const end = t + SLOT_MS;
+  return S.weekLessons.some((l) => {
+    const tr = travelMs(l);
+    if (!tr) return false;
+    const s = T(l.start_at), e = T(l.end_at);
+    return (t < s && end > s - tr) || (t < e + tr && end > e);
+  });
 }
 
-function studentCell(t) {
+// Description d'une case : key (cases fusionnées en bloc si même clé), cls, block, label, sub, lid.
+function adminCell(t) {
+  const l = lessonAt(S.weekLessons, t);
+  if (l) {
+    const label = `${lessonTitle(l)} · ${studentName(l)}${l.status === 'pending' ? ' (demande)' : ''}`;
+    const tip = [label, fRange(l.start_at, l.end_at), subjectLabel(l), MODES[l.mode], priceText(l)].filter(Boolean).join('\n');
+    return { key: 'L' + l.id, cls: l.status, block: true, label, sub: hhmm(l), tip, lid: l.id };
+  }
+  if (travelAt(t)) return { key: 'travel', cls: 'travel', block: true, label: 'Trajet' };
+  const open = S.open.has(t);
+  const clickable = S.editMode && t >= Date.now();
+  return open
+    ? { key: 'open', cls: 'open', block: true, label: 'Disponible', clickable }
+    : { key: 'closed', cls: 'closed', block: false, label: '', clickable };
+}
+
+// Case élève sans tenir compte de la sélection.
+function studentBase(t) {
   const s = S.slotState.get(t);
   const st = s && t >= Date.now() ? s.state : null;   // le passé n'est jamais affiché à l'élève
-  if (st === 'free') return { cls: 'open', key: 'free', label: 'Disponible', clickable: true };
-  if (st === 'mine_pending') return { cls: 'pending', key: 'pending', label: 'Demande en attente', clickable: false };
-  if (st === 'mine_confirmed') {
-    const title = (s.title && s.title.trim()) || 'Cours';
-    return { cls: 'confirmed', key: `c:${title}`, label: title, tip: `${title} (cours programmé)`, clickable: false };
+  if (st === 'free') return { key: 'free', cls: 'open', block: true, label: 'Disponible', clickable: true };
+  if (st === 'mine_pending' || st === 'mine_confirmed') {
+    const l = lessonAt(S.myLessons || [], t);
+    const pending = st === 'mine_pending';
+    return {
+      key: l ? 'L' + l.id : st, cls: pending ? 'pending' : 'confirmed', block: true,
+      label: pending ? 'Demande en attente' : ((s.title && s.title.trim()) || 'Cours'),
+      sub: l ? hhmm(l) : '', lid: l?.id,
+    };
   }
-  return { cls: 'unavail', key: 'unavail', label: 'Indisponible', clickable: false };
+  return { key: 'unavail', cls: 'unavail', block: false, label: 'Indisponible' };
 }
 
-const cellInfo = (t) => (S.isAdmin ? adminCell(t) : studentCell(t));
 const isSelected = (d, r) => S.selection && S.selection.d === d && r >= S.selection.r0 && r <= S.selection.r1;
+
+function cellInfo(t, d, r) {
+  if (S.isAdmin) return adminCell(t);
+  if (isSelected(d, r)) {
+    const [a, b] = selectionRange();
+    return { key: 'sel', cls: 'selected', block: true, label: 'Sélection', sub: `${fTime(a)}–${fTime(b)}`, clickable: true };
+  }
+  return studentBase(t);
+}
 
 function drawGrid() {
   const grid = document.getElementById('grid');
   if (!grid) return;
   const days = weekDays(), rows = days[0].slots.length, now = Date.now(), today = new Date();
+  // Description de toutes les cases, colonne par colonne.
+  const info = days.map((day, d) => day.slots.map((t, r) => cellInfo(t, d, r)));
   let h = '<table class="grid"><thead><tr><th class="time"></th>';
   h += days.map((d) => `<th class="${sameDay(d.date, today) ? 'today' : ''}">${esc(cap(fDayShort(d.date)))}</th>`).join('');
   h += '</tr></thead><tbody>';
@@ -593,11 +637,16 @@ function drawGrid() {
     h += `<tr class="${r % 2 ? 'half' : 'full'}"><th class="time">${label}</th>`;
     for (let d = 0; d < 7; d++) {
       const t = days[d].slots[r];
-      const info = cellInfo(t);
-      const prev = r > 0 ? cellInfo(days[d].slots[r - 1]) : null;
-      const showLabel = info.label && (!prev || prev.key !== info.key);
-      const cls = ['slot', info.cls, t < now ? 'past' : '', info.clickable ? 'clickable' : '', isSelected(d, r) ? 'selected' : ''].join(' ');
-      h += `<td class="${cls}" data-d="${d}" data-r="${r}" data-t="${t}" ${info.tip ? `title="${esc(info.tip)}"` : ''}>${showLabel ? `<span>${esc(info.label)}</span>` : ''}</td>`;
+      const c = info[d][r];
+      const start = r === 0 || info[d][r - 1].key !== c.key;
+      const end = r === rows - 1 || info[d][r + 1].key !== c.key;
+      const second = !start && r > 0 && (r === 1 || info[d][r - 2].key !== c.key);
+      const text = start ? c.label : (second && c.sub ? c.sub : '');
+      const cls = ['slot', c.cls,
+        c.block ? 'blk' : '', c.block && start ? 'bstart' : '', c.block && end ? 'bend' : '',
+        t < now ? 'past' : '', c.clickable ? 'clickable' : '', c.lid ? 'lclick' : '',
+        second && c.sub ? 'subline' : ''].filter(Boolean).join(' ');
+      h += `<td class="${cls}" data-d="${d}" data-r="${r}" data-t="${t}"${c.lid ? ` data-lid="${c.lid}"` : ''}${c.tip ? ` title="${esc(c.tip)}"` : ''}>${text ? `<span>${esc(text)}</span>` : ''}</td>`;
     }
     h += '</tr>';
   }
@@ -606,15 +655,17 @@ function drawGrid() {
   drawSelBar();
 }
 
-// --- Admin : rendre disponible / indisponible (mode modification uniquement)
+// --- Admin : rendre disponible / indisponible (mode modification) ; clic sur un cours
 function bindAdminGrid(grid) {
   let paint = null;
   const apply = (td) => {
     const isOpen = td.classList.contains('open');
     if ((paint.mode === 'open') === isOpen) return;
-    td.classList.toggle('open', paint.mode === 'open');
-    td.classList.toggle('closed', paint.mode !== 'open');
-    td.innerHTML = paint.mode === 'open' ? '<span>Disponible</span>' : '';
+    const open = paint.mode === 'open';
+    td.classList.toggle('open', open);
+    td.classList.toggle('closed', !open);
+    ['blk', 'bstart', 'bend'].forEach((c) => td.classList.toggle(c, open));
+    td.innerHTML = open ? '<span>Disponible</span>' : '';
     paint.cells.add(Number(td.dataset.t));
   };
   grid.addEventListener('pointerdown', (e) => {
@@ -629,6 +680,12 @@ function bindAdminGrid(grid) {
     if (!paint) return;
     const td = e.target.closest('td.slot.clickable');
     if (td) apply(td);
+  });
+  grid.addEventListener('click', (e) => {
+    const td = e.target.closest('td[data-lid]');
+    if (!td) return;
+    const l = S.weekLessons.find((x) => x.id === Number(td.dataset.lid));
+    if (l) openLessonPopup(l, loadWeek);
   });
   const finish = async () => {
     if (!paint) return;
@@ -665,9 +722,15 @@ async function copyPreviousWeek() {
   await loadWeek();
 }
 
-// --- Élève : sélection de créneaux contigus puis demande
+// --- Élève : sélection de créneaux contigus puis demande ; clic sur un de ses cours
 function bindStudentGrid(grid) {
   grid.addEventListener('click', (e) => {
+    const lessonTd = e.target.closest('td[data-lid]');
+    if (lessonTd) {
+      const l = (S.myLessons || []).find((x) => x.id === Number(lessonTd.dataset.lid));
+      if (l) openLessonPopup(l, loadWeek);
+      return;
+    }
     const td = e.target.closest('td.slot.clickable');
     if (!td) return;
     selectCell(Number(td.dataset.d), Number(td.dataset.r));
@@ -682,7 +745,7 @@ function selectCell(d, r) {
     const lo = Math.min(s.r0, r), hi = Math.max(s.r1, r);
     const days = weekDays();
     let ok = true;
-    for (let i = lo; i <= hi; i++) if (!studentCell(days[d].slots[i]).clickable) { ok = false; break; }
+    for (let i = lo; i <= hi; i++) if (!studentBase(days[d].slots[i]).clickable) { ok = false; break; }
     if (ok) { S.selection = { d, r0: lo, r1: hi }; return; }
   }
   S.selection = { d, r0: r, r1: r };
@@ -734,11 +797,37 @@ function openRequestModal(a, b) {
   });
 }
 
-// --- Admin : ajouter un cours à un élève (sans passer par une demande)
+// ---------------------------------------------------------------------
+// Fenêtres « cours » : détail, ajout, modification, annulation
+// ---------------------------------------------------------------------
 async function getStudents() {
   const { data, error } = await sb.from('profiles').select('*').eq('role', 'student');
   if (error) throw error;
   return data.sort((x, y) => (x.student_name || x.email || '').localeCompare(y.student_name || y.email || ''));
+}
+
+// Date / heure de début / durée (ajout et déplacement d'un cours).
+function scheduleFieldsHtml(start, durMin) {
+  const times = [];
+  for (let h = 6; h <= 23; h++) for (const m of [0, 30]) times.push(`${pad(h)}:${pad(m)}`);
+  const cur = `${pad(start.getHours())}:${pad(start.getMinutes())}`;
+  if (!times.includes(cur)) times.push(cur);
+  times.sort();
+  const durs = [];
+  for (let m = 30; m <= 360; m += 30) durs.push(m);
+  if (!durs.includes(durMin)) { durs.push(durMin); durs.sort((x, y) => x - y); }
+  return `
+    <div class="row3">
+      <label>Date<input type="date" name="date" required value="${isoDate(start)}"></label>
+      <label>Début<select name="time">${times.map((t) => `<option ${t === cur ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <label>Durée<select name="dur">${durs.map((m) => `<option value="${m}" ${m === durMin ? 'selected' : ''}>${fDur(m * 60000)}</option>`).join('')}</select></label>
+    </div>`;
+}
+function readSchedule(fd) {
+  const start = new Date(`${fd.get('date')}T${fd.get('time')}:00`);
+  if (Number.isNaN(start.getTime())) throw new Error('Date invalide.');
+  const end = new Date(start.getTime() + Number(fd.get('dur')) * 60000);
+  return { start_at: start.toISOString(), end_at: end.toISOString() };
 }
 
 async function openAddLessonModal(after) {
@@ -746,10 +835,8 @@ async function openAddLessonModal(after) {
   try { students = await getStudents(); } catch (e) { return toast(friendlyErr(e), 'err'); }
   if (!students.length) return toast('Aucun élève : invitez d\'abord un élève.', 'err');
   const today = new Date();
-  const defDay = S.weekStart <= today && today < addDays(S.weekStart, 7) ? today : S.weekStart;
-  const times = [];
-  for (let h = 7; h <= 22; h++) for (const m of [0, 30]) times.push(`${pad(h)}:${pad(m)}`);
-  const durs = [30, 60, 90, 120, 150, 180, 210, 240];
+  const day = S.weekStart <= today && today < addDays(S.weekStart, 7) ? new Date(today) : new Date(S.weekStart);
+  day.setHours(17, 0, 0, 0);
   openModal({
     title: 'Ajouter un cours',
     submitLabel: 'Ajouter le cours',
@@ -758,20 +845,13 @@ async function openAddLessonModal(after) {
         <option value="">— Choisir —</option>
         ${students.map((s) => `<option value="${s.id}">${esc(s.student_name || s.email)}${s.pending ? ' (compte non créé)' : ''}${s.hourly_rate != null ? ` (${esc(eur(s.hourly_rate))}/h)` : ''}</option>`).join('')}
       </select></label>
-      <div class="row3">
-        <label>Date<input type="date" name="date" required value="${isoDate(defDay)}"></label>
-        <label>Début<select name="time">${times.map((t) => `<option ${t === '17:00' ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
-        <label>Durée<select name="dur">${durs.map((m) => `<option value="${m}" ${m === 60 ? 'selected' : ''}>${fDur(m * 60000)}</option>`).join('')}</select></label>
-      </div>
+      ${scheduleFieldsHtml(day, 60)}
       ${lessonFieldsHtml({}, true)}
       <p class="muted small">Le cours est enregistré directement comme programmé, même en dehors de vos disponibilités.</p>`,
     onOpen: bindLessonFields,
     onSubmit: async (fd) => {
-      const start = new Date(`${fd.get('date')}T${fd.get('time')}:00`);
-      const end = new Date(start.getTime() + Number(fd.get('dur')) * 60000);
       const { error } = await sb.from('lessons').insert({
-        student_id: fd.get('student_id'), start_at: start.toISOString(), end_at: end.toISOString(),
-        status: 'confirmed', ...readLessonFields(fd, true),
+        student_id: fd.get('student_id'), status: 'confirmed', ...readSchedule(fd), ...readLessonFields(fd, true),
       });
       if (error) throw error;
       toast('Cours ajouté.');
@@ -780,21 +860,118 @@ async function openAddLessonModal(after) {
   });
 }
 
+// Modification complète (admin) : titre, date / heure / durée, lieu, matière, visio, notes, payé.
 function openEditLessonModal(l, after) {
+  const start = new Date(l.start_at);
+  const durMin = Math.round((T(l.end_at) - T(l.start_at)) / 60000);
   openModal({
-    title: 'Modifier le cours',
+    title: `Modifier le cours — ${esc(studentName(l))}`,
+    closeX: true,
     body: `
-      <p><strong>${esc(fRange(l.start_at, l.end_at))}</strong><br><span class="muted">${esc(studentName(l))}${priceText(l) ? ` · ${esc(priceText(l))}` : ''}</span></p>
-      ${lessonFieldsHtml(l, true)}`,
+      ${lessonFieldsHtml(l, true).replace('<fieldset class="seg"><legend>Lieu', `${scheduleFieldsHtml(start, durMin)}<fieldset class="seg"><legend>Lieu`)}
+      <label>Notes de séance<textarea name="notes" rows="4" placeholder="Chapitres vus, exercices, devoirs…">${esc(l.notes)}</textarea></label>
+      ${l.status === 'confirmed' ? `<label class="check"><input type="checkbox" name="paid" ${l.paid ? 'checked' : ''}> Payé</label>` : ''}
+      <p class="muted small">Le prix est recalculé automatiquement si la durée change.</p>`,
     onOpen: bindLessonFields,
     onSubmit: async (fd) => {
-      const patch = readLessonFields(fd, true);
+      const patch = {
+        ...readLessonFields(fd, true), ...readSchedule(fd),
+        notes: String(fd.get('notes') || '').trim() || null,
+      };
+      if (l.status === 'confirmed') patch.paid = fd.get('paid') === 'on';
       const { error } = await sb.from('lessons').update(patch).eq('id', l.id);
       if (error) throw error;
       toast('Cours modifié.');
       await after?.();
     },
   });
+}
+
+// Annulation avec motif (admin).
+function openCancelModal(l, after) {
+  openModal({
+    title: 'Annuler le cours',
+    closeX: true,
+    cancelLabel: null,
+    submitLabel: 'Confirmer l\'annulation',
+    submitClass: 'danger-fill',
+    body: `
+      <p><strong>${esc(studentName(l))}</strong> · ${esc(lessonTitle(l))}<br><span class="muted">${esc(fRange(l.start_at, l.end_at))}</span></p>
+      <label>Raison de l'annulation<textarea name="reason" rows="3" maxlength="500" placeholder="ex. élève malade, cours reporté…"></textarea></label>
+      <p class="muted small">Le créneau redevient disponible. L'élève verra le cours comme annulé, avec cette raison.</p>`,
+    onSubmit: async (fd) => {
+      const { error } = await sb.from('lessons')
+        .update({ status: 'cancelled', cancel_reason: String(fd.get('reason') || '').trim() || null })
+        .eq('id', l.id);
+      if (error) throw error;
+      toast('Cours annulé.');
+      await after?.();
+    },
+  });
+}
+
+async function setLessonStatus(l, status, msg, after) {
+  const { error } = await sb.from('lessons').update({ status }).eq('id', l.id);
+  if (error) return toast(friendlyErr(error), 'err');
+  toast(msg);
+  await after?.();
+}
+async function withdrawRequest(l, after) {
+  if (!confirm('Retirer cette demande ?')) return;
+  const { error } = await sb.from('lessons').delete().eq('id', l.id);
+  if (error) return toast(friendlyErr(error), 'err');
+  toast('Demande retirée.');
+  await after?.();
+}
+
+const statusLabel = { pending: 'Demande en attente', confirmed: 'Cours programmé', refused: 'Demande refusée', cancelled: 'Cours annulé' };
+
+// Détail d'un cours en lecture seule (clic dans le calendrier) ; crayon pour modifier (admin).
+function openLessonPopup(l, after) {
+  const rows = [
+    S.isAdmin ? ['Élève', esc(studentName(l))] : null,
+    ['Date', esc(fRange(l.start_at, l.end_at))],
+    ['Statut', esc(statusLabel[l.status] || l.status) + (l.status === 'confirmed' ? ` · ${l.paid ? 'payé' : 'non payé'}` : '')],
+    subjectLabel(l) ? ['Matière', esc(subjectLabel(l))] : null,
+    l.mode ? ['Lieu', esc(MODES[l.mode])] : null,
+    priceText(l) ? ['Prix', esc(priceText(l))] : null,
+    l.mode === 'distance' ? ['Visio', safeUrl(l.visio_link) ? `<a href="${esc(safeUrl(l.visio_link))}" target="_blank" rel="noopener">Rejoindre la visio</a>` : '<span class="muted">pas encore renseigné</span>'] : null,
+    l.notes ? ['Notes', `<span class="prewrap">${esc(l.notes)}</span>`] : null,
+  ].filter(Boolean);
+  const footer = S.isAdmin
+    ? (l.status === 'pending'
+      ? '<button data-pop="refuse">Refuser</button><button class="primary" data-pop="accept">Accepter</button>'
+      : '<button class="danger" data-pop="cancel">Annuler le cours</button>')
+    : (l.status === 'pending' ? '<button data-pop="withdraw">Retirer ma demande</button>' : '');
+  const dlg = document.createElement('dialog');
+  dlg.className = 'modal';
+  dlg.innerHTML = `
+    <div class="modal-form">
+      <div class="info-head">
+        <h2>${esc(lessonTitle(l))}</h2>
+        <div class="info-tools">
+          ${S.isAdmin ? `<button class="icon-only" data-pop="edit" title="Modifier le cours" aria-label="Modifier le cours">${PENCIL}</button>` : ''}
+          <button class="icon-only close-x" data-pop="close" aria-label="Fermer">×</button>
+        </div>
+      </div>
+      <dl class="info">${rows.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>
+      ${footer ? `<div class="actions end">${footer}</div>` : ''}
+    </div>`;
+  document.body.appendChild(dlg);
+  dlg.addEventListener('close', () => dlg.remove());
+  dlg.addEventListener('click', async (e) => {
+    if (e.target === dlg) return dlg.close();
+    const b = e.target.closest('[data-pop]');
+    if (!b) return;
+    const act = b.dataset.pop;
+    dlg.close();
+    if (act === 'edit') openEditLessonModal(l, after);
+    else if (act === 'cancel') openCancelModal(l, after);
+    else if (act === 'accept') await setLessonStatus(l, 'confirmed', 'Cours confirmé.', after);
+    else if (act === 'refuse') { if (confirm('Refuser cette demande ? Le créneau redeviendra libre.')) await setLessonStatus(l, 'refused', 'Demande refusée.', after); }
+    else if (act === 'withdraw') await withdrawRequest(l, after);
+  });
+  dlg.showModal();
 }
 
 // ---------------------------------------------------------------------
@@ -811,59 +988,77 @@ async function renderDashboard() {
 }
 
 const paidBadge = (l) => `<span class="badge ${l.paid ? 'ok' : 'warn'}">${l.paid ? 'Payé' : 'Non payé'}</span>`;
-const statusLabel = { pending: 'En attente', confirmed: 'Confirmé', refused: 'Refusé', cancelled: 'Annulé' };
-const section = (title, items, empty) =>
-  `<section><h2>${title} <span class="count">${items.length}</span></h2>${items.length ? items.join('') : `<p class="muted">${empty}</p>`}</section>`;
 const metaLine = (l) => { const m = lessonMeta(l); return m ? `<div class="meta">${m}</div>` : ''; };
+const shortRange = (l) => `${cap(fDayShort(l.start_at))} · ${hhmm(l)} (${fDur(T(l.end_at) - T(l.start_at))})`;
+const cardsHtml = (items, empty) => (items.length ? `<div class="cards">${items.join('')}</div>` : `<p class="muted">${empty}</p>`);
+const sectionHtml = (title, items, empty) =>
+  `<section><h2>${title} <span class="count">${items.length}</span></h2>${cardsHtml(items, empty)}</section>`;
+const foldHtml = (title, items, empty) =>
+  `<details class="fold"><summary>${title} <span class="count">${items.length}</span></summary>${cardsHtml(items, empty)}</details>`;
+
+// Carte de cours condensée. Admin : l'élève en titre ; élève : le titre de la séance.
+function lessonCard(l, kind) {
+  const now = Date.now();
+  const main = S.isAdmin ? studentName(l) : lessonTitle(l);
+  const sub = S.isAdmin ? `${lessonTitle(l)} · ${shortRange(l)}` : shortRange(l);
+  const canEdit = S.isAdmin && kind !== 'closed';
+  let foot = '';
+  if (S.isAdmin) {
+    if (kind === 'pending') {
+      foot = `${T(l.start_at) < now ? '<span class="badge warn">date passée</span>' : ''}
+        <span class="grow"></span>
+        <button data-act="refuse" data-id="${l.id}">Refuser</button>
+        <button class="primary" data-act="accept" data-id="${l.id}">Accepter</button>`;
+    } else if (kind === 'closed') {
+      foot = `<span class="badge">${statusLabel[l.status]}</span><span class="grow"></span>
+        <button class="danger" data-act="delete" data-id="${l.id}">Supprimer</button>`;
+    } else {
+      foot = `<label class="check"><input type="checkbox" data-act="paid" data-id="${l.id}" ${l.paid ? 'checked' : ''}> Payé</label>
+        <span class="grow"></span>
+        <button class="danger" data-act="cancel" data-id="${l.id}">Annuler le cours</button>`;
+    }
+  } else if (kind === 'pending') {
+    foot = `<span class="badge warn">En attente de validation</span><span class="grow"></span>
+      <button data-act="withdraw" data-id="${l.id}">Retirer ma demande</button>`;
+  } else if (kind === 'closed') {
+    foot = `<span class="badge">${statusLabel[l.status]}</span>`;
+  } else {
+    foot = paidBadge(l);
+  }
+  return `
+    <div class="lcard ${kind}">
+      <div class="lcard-head">
+        <div class="lcard-main">
+          <div class="lcard-title">${esc(main)}</div>
+          <div class="lcard-sub">${esc(sub)}</div>
+        </div>
+        ${canEdit ? `<button class="icon-only" data-act="edit" data-id="${l.id}" title="Modifier (informations et notes)" aria-label="Modifier">${PENCIL}</button>` : ''}
+      </div>
+      ${metaLine(l)}
+      ${kind === 'upcoming' || (kind === 'past' && S.isAdmin) ? visioHtml(l) : ''}
+      ${l.notes && kind !== 'pending' ? `<div class="lcard-notes" title="Notes de séance">${esc(l.notes)}</div>` : ''}
+      ${l.status === 'cancelled' && l.cancel_reason ? `<div class="lcard-reason">Motif : ${esc(l.cancel_reason)}</div>` : ''}
+      <div class="lcard-foot">${foot}</div>
+    </div>`;
+}
+
+function splitLessons(L) {
+  const now = Date.now();
+  return {
+    pending: L.filter((l) => l.status === 'pending'),
+    upcoming: L.filter((l) => l.status === 'confirmed' && T(l.end_at) >= now),
+    past: L.filter((l) => l.status === 'confirmed' && T(l.end_at) < now).reverse(),
+    closed: L.filter((l) => l.status === 'refused' || l.status === 'cancelled').reverse(),
+  };
+}
 
 function drawAdminDash() {
-  const now = Date.now();
   const all = S.lessons;
   const students = [...new Map(all.map((l) => [l.student_id, studentName(l)])).entries()]
     .sort((a, b) => a[1].localeCompare(b[1]));
-  const L = S.dashFilter ? all.filter((l) => l.student_id === S.dashFilter) : all;
-
-  const pending = L.filter((l) => l.status === 'pending');
-  const upcoming = L.filter((l) => l.status === 'confirmed' && T(l.end_at) >= now);
-  const past = L.filter((l) => l.status === 'confirmed' && T(l.end_at) < now).reverse();
-  const closed = L.filter((l) => l.status === 'refused' || l.status === 'cancelled').reverse();
+  const { pending, upcoming, past, closed } = splitLessons(S.dashFilter ? all.filter((l) => l.student_id === S.dashFilter) : all);
   const unpaid = past.filter((l) => !l.paid);
   const unpaidSum = unpaid.reduce((s, l) => s + (priceOf(l) || 0), 0);
-
-  const pendingCard = (l) => `
-    <div class="lesson">
-      <div class="ltitle">${esc(lessonTitle(l))}</div>
-      <div class="when">${esc(fRange(l.start_at, l.end_at))} ${T(l.start_at) < now ? '<span class="badge warn">date passée</span>' : ''}</div>
-      <div class="whois">${esc(studentName(l))}</div>
-      ${metaLine(l)}
-      <div class="actions">
-        <button class="primary" data-act="accept" data-id="${l.id}">Accepter</button>
-        <button data-act="refuse" data-id="${l.id}">Refuser</button>
-      </div>
-    </div>`;
-  const lessonCard = (l, isUpcoming) => `
-    <div class="lesson">
-      <div class="ltitle">${esc(lessonTitle(l))}</div>
-      <div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
-      <div class="whois">${esc(studentName(l))}</div>
-      ${metaLine(l)}
-      ${visioHtml(l)}
-      <label class="check"><input type="checkbox" data-act="paid" data-id="${l.id}" ${l.paid ? 'checked' : ''}> Payé</label>
-      <label class="notes">Notes de séance
-        <textarea rows="2" data-notes="${l.id}" placeholder="Chapitres vus, exercices, devoirs…">${esc(l.notes)}</textarea>
-      </label>
-      <div class="actions">
-        <button data-act="savenotes" data-id="${l.id}">Enregistrer les notes</button>
-        <button data-act="edit" data-id="${l.id}">Modifier (titre, lieu, matière, visio)</button>
-        ${isUpcoming
-          ? `<button class="danger" data-act="cancel" data-id="${l.id}">Annuler le cours</button>`
-          : `<button class="danger" data-act="delete" data-id="${l.id}">Supprimer</button>`}
-      </div>
-    </div>`;
-  const closedCard = (l) => `
-    <div class="lesson dim"><div class="ltitle">${esc(lessonTitle(l))}</div><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
-    <div class="whois">${esc(studentName(l))} · <span class="badge">${statusLabel[l.status]}</span></div>${metaLine(l)}
-    <div class="actions"><button class="danger" data-act="delete" data-id="${l.id}">Supprimer</button></div></div>`;
 
   $view().innerHTML = `
     <div class="summary">
@@ -877,84 +1072,49 @@ function drawAdminDash() {
           ${students.map(([id, n]) => `<option value="${id}" ${S.dashFilter === id ? 'selected' : ''}>${esc(n)}</option>`).join('')}
         </select>
       </label>
-      <button class="primary" id="addLesson">+ Ajouter un cours</button>
     </div>
-    ${section('Demandes en attente', pending.map(pendingCard), 'Aucune demande en attente.')}
-    ${section('Cours à venir', upcoming.map((l) => lessonCard(l, true)), 'Aucun cours programmé.')}
-    ${section('Cours passés', past.map((l) => lessonCard(l, false)), 'Aucun cours passé.')}
-    <details><summary>Demandes refusées et cours annulés (${closed.length})</summary>${closed.map(closedCard).join('')}</details>`;
+    ${sectionHtml('Demandes en attente', pending.map((l) => lessonCard(l, 'pending')), 'Aucune demande en attente.')}
+    ${sectionHtml('Cours à venir', upcoming.map((l) => lessonCard(l, 'upcoming')), 'Aucun cours programmé.')}
+    ${foldHtml('Cours passés', past.map((l) => lessonCard(l, 'past')), 'Aucun cours passé.')}
+    ${foldHtml('Cours annulés et demandes refusées', closed.map((l) => lessonCard(l, 'closed')), 'Aucun.')}`;
 
   document.getElementById('filter').onchange = (e) => { S.dashFilter = e.target.value; drawAdminDash(); };
-  document.getElementById('addLesson').onclick = () => openAddLessonModal(renderDashboard);
   bindDashActions();
 }
 
 function drawStudentDash() {
-  const now = Date.now();
-  const L = S.lessons;
-  const pending = L.filter((l) => l.status === 'pending');
-  const upcoming = L.filter((l) => l.status === 'confirmed' && T(l.end_at) >= now);
-  const past = L.filter((l) => l.status === 'confirmed' && T(l.end_at) < now).reverse();
-  const closed = L.filter((l) => l.status === 'refused' || l.status === 'cancelled').reverse();
-
-  const notes = (l) => (l.notes ? `<div class="notes-ro"><div class="small muted">Notes de séance</div>${esc(l.notes)}</div>` : '');
-  const card = (l, withVisio) => `
-    <div class="lesson">
-      <div class="ltitle">${esc(lessonTitle(l))}</div>
-      <div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
-      ${metaLine(l)}
-      ${withVisio ? visioHtml(l) : ''}
-      ${paidBadge(l)}${notes(l)}
-    </div>`;
-  const pendingCard = (l) => `
-    <div class="lesson"><div class="ltitle">${esc(lessonTitle(l))}</div><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>
-    ${metaLine(l)}
-    <div class="actions"><span class="badge warn">En attente de validation</span>
-    <button data-act="withdraw" data-id="${l.id}">Retirer ma demande</button></div></div>`;
-  const closedCard = (l) => `<div class="lesson dim"><div class="ltitle">${esc(lessonTitle(l))}</div><div class="when">${esc(fRange(l.start_at, l.end_at))}</div>${metaLine(l)}<span class="badge">${statusLabel[l.status]}</span></div>`;
-
+  const { pending, upcoming, past, closed } = splitLessons(S.lessons);
   $view().innerHTML = `
-    ${section('Mes demandes en attente', pending.map(pendingCard), 'Aucune demande en attente.')}
-    ${section('Cours programmés', upcoming.map((l) => card(l, true)), 'Aucun cours programmé. Réservez depuis l\'onglet « Réserver ».')}
-    ${section('Cours passés', past.map((l) => card(l, false)), 'Aucun cours passé.')}
-    <details><summary>Demandes refusées et cours annulés (${closed.length})</summary>${closed.map(closedCard).join('')}</details>`;
+    ${sectionHtml('Mes demandes en attente', pending.map((l) => lessonCard(l, 'pending')), 'Aucune demande en attente.')}
+    ${sectionHtml('Cours programmés', upcoming.map((l) => lessonCard(l, 'upcoming')), 'Aucun cours programmé. Réservez depuis l\'onglet « Réserver ».')}
+    ${foldHtml('Cours passés', past.map((l) => lessonCard(l, 'past')), 'Aucun cours passé.')}
+    ${foldHtml('Cours annulés et demandes refusées', closed.map((l) => lessonCard(l, 'closed')), 'Aucun.')}`;
   bindDashActions();
 }
 
 function bindDashActions() {
   const v = $view();
-  const update = async (id, patch, okMsg, rerender = true) => {
-    const { error } = await sb.from('lessons').update(patch).eq('id', id);
-    if (error) { toast(friendlyErr(error), 'err'); return false; }
-    const l = S.lessons.find((x) => x.id === id); if (l) Object.assign(l, patch);
-    toast(okMsg);
-    if (rerender) renderDashboard();
-    return true;
+  // Garde les sections repliées ouvertes après un rafraîchissement.
+  const refresh = async () => {
+    const open = [...v.querySelectorAll('details.fold')].map((d) => d.open);
+    await renderDashboard();
+    v.querySelectorAll('details.fold').forEach((d, i) => { if (open[i]) d.open = true; });
   };
   v.onclick = async (e) => {
     const b = e.target.closest('button[data-act]');
     if (!b) return;
-    const id = Number(b.dataset.id);
+    const l = S.lessons.find((x) => x.id === Number(b.dataset.id));
+    if (!l) return;
     switch (b.dataset.act) {
-      case 'accept': await update(id, { status: 'confirmed' }, 'Cours confirmé.'); break;
-      case 'refuse': if (confirm('Refuser cette demande ? Le créneau redeviendra libre.')) await update(id, { status: 'refused' }, 'Demande refusée.'); break;
-      case 'cancel': if (confirm('Annuler ce cours ? Le créneau redeviendra libre.')) await update(id, { status: 'cancelled' }, 'Cours annulé.'); break;
-      case 'edit': openEditLessonModal(S.lessons.find((x) => x.id === id), renderDashboard); break;
-      case 'savenotes': {
-        const ta = v.querySelector(`textarea[data-notes="${id}"]`);
-        await update(id, { notes: ta.value.trim() || null }, 'Notes enregistrées.', false);
-        break;
-      }
+      case 'accept': await setLessonStatus(l, 'confirmed', 'Cours confirmé.', refresh); break;
+      case 'refuse': if (confirm('Refuser cette demande ? Le créneau redeviendra libre.')) await setLessonStatus(l, 'refused', 'Demande refusée.', refresh); break;
+      case 'cancel': openCancelModal(l, refresh); break;
+      case 'edit': openEditLessonModal(l, refresh); break;
+      case 'withdraw': await withdrawRequest(l, refresh); break;
       case 'delete': {
-        if (!confirm('Supprimer définitivement ce cours ? Cette action est irréversible.')) break;
-        const { error } = await sb.from('lessons').delete().eq('id', id);
-        if (error) toast(friendlyErr(error), 'err'); else { toast('Cours supprimé.'); renderDashboard(); }
-        break;
-      }
-      case 'withdraw': {
-        if (!confirm('Retirer cette demande ?')) break;
-        const { error } = await sb.from('lessons').delete().eq('id', id);
-        if (error) toast(friendlyErr(error), 'err'); else { toast('Demande retirée.'); renderDashboard(); }
+        if (!confirm('Supprimer définitivement ce cours de la base ? Cette action est irréversible.')) break;
+        const { error } = await sb.from('lessons').delete().eq('id', l.id);
+        if (error) toast(friendlyErr(error), 'err'); else { toast('Cours supprimé.'); await refresh(); }
         break;
       }
     }
@@ -962,8 +1122,11 @@ function bindDashActions() {
   v.onchange = async (e) => {
     const cb = e.target.closest('input[data-act="paid"]');
     if (!cb) return;
-    const ok = await update(Number(cb.dataset.id), { paid: cb.checked }, cb.checked ? 'Marqué payé.' : 'Marqué non payé.', false);
-    if (!ok) cb.checked = !cb.checked;
+    const id = Number(cb.dataset.id);
+    const { error } = await sb.from('lessons').update({ paid: cb.checked }).eq('id', id);
+    if (error) { cb.checked = !cb.checked; return toast(friendlyErr(error), 'err'); }
+    const l = S.lessons.find((x) => x.id === id); if (l) l.paid = cb.checked;
+    toast(cb.checked ? 'Marqué payé.' : 'Marqué non payé.');
   };
 }
 
@@ -1061,11 +1224,15 @@ function openEditStudentModal(p, after) {
       <label>E-mail de connexion<input type="text" value="${esc(p.pending ? '(compte pas encore créé)' : p.email)}" disabled></label>
       <label>Tarif horaire (€/h, visible par vous seul)<input type="number" name="hourly_rate" min="0" step="0.5" inputmode="decimal" value="${p.hourly_rate ?? ''}" placeholder="laisser vide si non défini"></label>
       <p class="muted small">Un changement de tarif s'applique aux demandes en attente et aux cours à venir ; les cours passés conservent leur tarif.</p>
+      <label>Temps de trajet (minutes, aller et retour chacun ; visible par vous seul)<input type="number" name="travel_minutes" min="0" max="240" step="5" required value="${p.travel_minutes ?? 45}"></label>
+      <p class="muted small">Bloqué avant et après chaque cours à domicile (affiché « Trajet » dans votre calendrier, indisponible pour les élèves). 0 = pas de trajet.</p>
       ${profileFieldsHtml(p, false)}`,
     onSubmit: async (fd) => {
       const raw = String(fd.get('hourly_rate') || '').replace(',', '.').trim();
-      const patch = { ...readProfileFields(fd), hourly_rate: raw === '' ? null : Number(raw) };
+      const travel = Number(fd.get('travel_minutes'));
+      const patch = { ...readProfileFields(fd), hourly_rate: raw === '' ? null : Number(raw), travel_minutes: travel };
       if (patch.hourly_rate != null && !(patch.hourly_rate >= 0)) throw new Error('Tarif invalide.');
+      if (!(travel >= 0 && travel <= 240)) throw new Error('Temps de trajet invalide (0 à 240 min).');
       const { error } = await sb.from('profiles').update(patch).eq('id', p.id);
       if (error) throw error;
       toast('Fiche enregistrée.');
@@ -1204,6 +1371,7 @@ async function loadStudents() {
       ${p.pending ? inviteBlock(p) : ''}
       <dl>
         <dt>Tarif horaire</dt><dd>${esc(rateText(p.hourly_rate))}</dd>
+        <dt>Temps de trajet</dt><dd>${esc(String(p.travel_minutes ?? 45))} min (aller et retour, cours à domicile)</dd>
       </dl>
       <div class="psections">${profileReadHtml(p)}</div>
       <div class="actions">
